@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+
+      - name: Install
+        run: uv sync
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Test
+        run: uv run pytest -q
+
+      - name: Smoke test the pipeline end to end
+        # The mock provider needs no credentials, so CI can exercise the real
+        # seed -> poll -> score path rather than only the unit tests.
+        run: |
+          uv run fareloot init
+          uv run fareloot seed --provider mock
+          uv run fareloot poll --provider mock --notify console --no-discovery
