@@ -1,0 +1,52 @@
+name: watch
+
+on:
+  schedule:
+    - cron: "7 * * * *" # hourly, offset from the hour to dodge GitHub's traffic spike
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fareloot-watch
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore price history
+        run: |
+          git fetch origin fareloot-data --depth=1 2>/dev/null || true
+          if git show-ref --verify --quiet refs/remotes/origin/fareloot-data; then
+            git show origin/fareloot-data:fareloot.db > data/fareloot.db 2>/dev/null || true
+          fi
+          mkdir -p data
+
+      - uses: astral-sh/setup-uv@v3
+
+      - name: Install
+        run: uv sync --no-dev
+
+      - name: Poll
+        env:
+          FARELOOT_TP_TOKEN: ${{ secrets.FARELOOT_TP_TOKEN }}
+          FARELOOT_TELEGRAM_BOT_TOKEN: ${{ secrets.FARELOOT_TELEGRAM_BOT_TOKEN }}
+          FARELOOT_TELEGRAM_CHAT_ID: ${{ secrets.FARELOOT_TELEGRAM_CHAT_ID }}
+        run: uv run fareloot poll --notify telegram
+
+      - name: Persist price history
+        # Force-pushed as a single commit to an orphan branch, not committed to
+        # main - an hourly binary DB would otherwise balloon the repo forever.
+        run: |
+          cp data/fareloot.db /tmp/fareloot.db
+          git checkout --orphan fareloot-data
+          git rm -rf . >/dev/null 2>&1 || true
+          cp /tmp/fareloot.db fareloot.db
+          git add fareloot.db
+          git -c user.name="fareloot-bot" -c user.email="actions@users.noreply.github.com" \
+            commit -m "data: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push --force origin HEAD:fareloot-data

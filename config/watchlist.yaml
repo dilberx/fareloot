@@ -1,0 +1,64 @@
+# Airports you can realistically depart from, and what it costs to get there.
+# Times and fares are one-way estimates; fareloot doubles them for a round trip.
+origins:
+  - { iata: COK, name: Kochi,       reach: { mode: local,           hours: 1,   cost_inr: 200 } }
+  - { iata: TRV, name: Trivandrum,  reach: { mode: train,           hours: 4.5, cost_inr: 400 } }
+  - { iata: CCJ, name: Kozhikode,   reach: { mode: train,           hours: 4,   cost_inr: 350 } }
+  - { iata: CNN, name: Kannur,      reach: { mode: train,           hours: 6,   cost_inr: 450 } }
+  - { iata: CJB, name: Coimbatore,  reach: { mode: train,           hours: 5,   cost_inr: 450 } }
+  - { iata: IXM, name: Madurai,     reach: { mode: overnight_train, hours: 8,   cost_inr: 600 } }
+  - { iata: IXE, name: Mangalore,   reach: { mode: overnight_train, hours: 10,  cost_inr: 800 } }
+  - { iata: BLR, name: Bangalore,   reach: { mode: overnight_train, hours: 12,  cost_inr: 900 } }
+  - { iata: MAA, name: Chennai,     reach: { mode: overnight_train, hours: 14,  cost_inr: 1000 } }
+
+# Places worth watching closely. Discovery scanning finds the rest on its own.
+destinations:
+  - BKK  # Bangkok
+  - HKT  # Phuket
+  - KUL  # Kuala Lumpur
+  - SIN  # Singapore
+  - CGK  # Jakarta
+  - DPS  # Bali
+  - SGN  # Ho Chi Minh City
+  - HAN  # Hanoi
+  - CMB  # Colombo
+  - MLE  # Male
+  - KTM  # Kathmandu
+  - DXB  # Dubai
+  - AUH  # Abu Dhabi
+  - DOH  # Doha
+  - MCT  # Muscat
+  - GYD  # Baku
+  - TBS  # Tbilisi
+  - EVN  # Yerevan
+  - ALA  # Almaty
+  - TAS  # Tashkent
+  - IST  # Istanbul
+  - CAI  # Cairo
+  - NBO  # Nairobi
+  - HKG  # Hong Kong
+  - DEL  # Delhi
+  - BOM  # Mumbai
+  - GOI  # Goa
+
+# How far you are willing to travel overland to reach a cheaper airport.
+max_reach_hours: 14
+
+# What an hour on a train is worth to you, used only to rank options against
+# each other. It is never shown as money and never added to a quoted price.
+train_hour_value_inr: 80
+
+# Round-trip durations to price, in days.
+trip_lengths: [7, 10, 14]
+search_horizon_months: 6
+
+alerts:
+  min_saving_inr: 3000
+  min_pct_below_baseline: 25
+  cooldown_hours: 48
+  redrop_pct: 10
+  tiers:
+    jackpot: 95
+    loot: 80
+    steal: 65
+    deal: 50
