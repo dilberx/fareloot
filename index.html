@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fareloot</title>
+<meta name="description" content="Round-trip flight price monitoring that learns each route's normal price and flags unusual drops.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>%E2%9C%88%EF%B8%8F</text></svg>">
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #161a21;
+    --line: #262c36;
+    --text: #e6e9ef;
+    --muted: #949cab;
+    --accent: #5b9dff;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #ffffff; --panel: #f6f7f9; --line: #e2e5ea;
+      --text: #15181d; --muted: #5b6472; --accent: #1f6feb;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 72px 16px 96px; }
+  h1 { font-size: 2.1rem; margin: 0 0 .4rem; letter-spacing: -.02em; }
+  .tag { color: var(--muted); font-size: 1.05rem; margin: 0 0 2.5rem; }
+  h2 { font-size: 1.05rem; margin: 2.5rem 0 .75rem; letter-spacing: .02em; text-transform: uppercase; color: var(--muted); }
+  p { margin: 0 0 1rem; }
+  ul { margin: 0 0 1rem; padding-left: 1.2rem; }
+  li { margin-bottom: .5rem; }
+  code { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: .1em .4em; font-size: .9em; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; margin: 0 0 1rem; }
+  .card h3 { margin: 0 0 .35rem; font-size: 1rem; }
+  .card p { margin: 0; color: var(--muted); font-size: .95rem; }
+  a { color: var(--accent); }
+  footer { margin-top: 3.5rem; padding-top: 1.5rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .9rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>fareloot</h1>
+  <p class="tag">Round-trip flight price monitoring that learns what a route normally costs, then tells you when it crashes.</p>
+
+  <p>
+    A fare is only cheap relative to its own history. &#8377;18,000 to Baku is a steal and
+    &#8377;18,000 to Colombo is a ripoff, and no fixed threshold can tell those apart. fareloot keeps
+    its own price history per route and flags statistical outliers against that baseline.
+  </p>
+
+  <h2>How it decides</h2>
+
+  <div class="card">
+    <h3>Per-route baselines, not fixed thresholds</h3>
+    <p>Every price is scored against that specific route's own history using median and
+    median absolute deviation, so one festival-season spike cannot distort the baseline.</p>
+  </div>
+
+  <div class="card">
+    <h3>A round trip is the unit, not a leg</h3>
+    <p>A cheap outbound paired with a gouging return is not a deal. The return market is
+    checked separately and vetoes anything that looks like a trap.</p>
+  </div>
+
+  <div class="card">
+    <h3>Door-to-door cost, not just airfare</h3>
+    <p>Departure airports carry the real cost of reaching them, including an overnight
+    train where that applies, so a saving has to survive the journey to collect it.</p>
+  </div>
+
+  <h2>Built with</h2>
+  <p>
+    Python, SQLite for the price history, and the
+    <a href="https://www.travelpayouts.com/">Travelpayouts</a> Aviasales Data API for fares.
+    It runs as a scheduled job and pushes alerts to Telegram.
+  </p>
+
+  <h2>Source</h2>
+  <p>
+    Open source at <a href="https://github.com/dilberx/fareloot">github.com/dilberx/fareloot</a>.
+    Run <code>fareloot poll --provider mock</code> to try the whole pipeline without any API credentials.
+  </p>
+
+  <footer>
+    A personal project. Fare data comes from Aviasales via Travelpayouts.
+    Prices are cached and can change before you book, so every alert links to a live search.
+  </footer>
+
+</div>
+</body>
+</html>
