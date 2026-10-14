@@ -211,3 +211,76 @@ def test_ranked_total_matches_journey_calculation():
         train_hour_value_inr=100.0,
     )
     assert ranked_total(deal, wl) == 11800.0
+
+
+def _multi_origin_watchlist(destinations: list[str]) -> Watchlist:
+    return Watchlist(
+        origins=[
+            OriginModel(iata=code, name=code, reach=ReachModel(mode="train", hours=h, cost_inr=500))
+            for code, h in [("COK", 1), ("TRV", 4), ("CCJ", 4), ("BLR", 12), ("MAA", 14)]
+        ],
+        destinations=destinations,
+        max_reach_hours=14,
+        train_hour_value_inr=80,
+    )
+
+
+class _RecordingProvider(MockProvider):
+    """Remembers which round-trip routes were priced and how many calls were made."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.priced: set[tuple[str, str]] = set()
+
+    def cheap(self, origin, destination, depart, return_=None):
+        if return_ is not None:
+            self.priced.add((origin, destination))
+        return super().cheap(origin, destination, depart, return_)
+
+
+def test_small_budget_still_reaches_every_origin_across_runs(store):
+    # 5 origins x 4 destinations = 20 pairs, but a budget that only fits 3 per run.
+    # The old fixed-order loop priced the first origin forever and never reached
+    # BLR or MAA, the overnight-train airports the reach ranking exists for.
+    wl = _multi_origin_watchlist(["GYD", "TBS", "BKK", "DXB"])
+    today = date(2026, 11, 1)
+    covered: set[tuple[str, str]] = set()
+    for _ in range(7):
+        p = _RecordingProvider(today=today)
+        poll(p, store, wl, today=today, include_discovery=False, call_budget=9)
+        covered |= p.priced
+    origins_reached = {o for o, _ in covered}
+    assert origins_reached == {"COK", "TRV", "CCJ", "BLR", "MAA"}
+    assert len(covered) == 20
+
+
+def test_cursor_wraps_and_never_repeats_within_a_cycle(store):
+    wl = _multi_origin_watchlist(["GYD", "TBS"])  # 10 pairs
+    today = date(2026, 11, 1)
+    seen: list[tuple[str, str]] = []
+    for _ in range(5):  # 2 pairs per run -> exactly one full cycle
+        p = _RecordingProvider(today=today)
+        poll(p, store, wl, today=today, include_discovery=False, call_budget=6)
+        seen += sorted(p.priced)
+    assert len(seen) == 10
+    assert len(set(seen)) == 10
+
+
+def test_discovery_runs_even_when_budget_is_tiny(store):
+    # Discovery is spent first, so a budget that leaves nothing for the wishlist
+    # must still scan every origin.
+    wl = _multi_origin_watchlist(["GYD"])
+    today = date(2026, 11, 1)
+    p = _RecordingProvider(today=today)
+    result = poll(p, store, wl, today=today, include_discovery=True, call_budget=10)
+    discovered = {d.quote.origin for d in result.deals if d.quote.destination != "GYD"}
+    assert discovered == {"COK", "TRV", "CCJ", "BLR", "MAA"}
+    assert p.priced == set()
+
+
+def test_budget_caps_calls(store):
+    wl = _multi_origin_watchlist(["GYD", "TBS", "BKK", "DXB"])
+    today = date(2026, 11, 1)
+    p = _RecordingProvider(today=today)
+    poll(p, store, wl, today=today, include_discovery=True, call_budget=40)
+    assert p.calls_made <= 40

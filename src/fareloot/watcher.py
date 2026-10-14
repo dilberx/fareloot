@@ -18,6 +18,35 @@ from .scoring import Scored, score
 from .store import Store
 
 DISCOVERY_PROMOTE_TIER = Tier.DEAL
+CURSOR_KEY = "wishlist_cursor"
+CALLS_PER_PAIR = 3  # two round-trip months plus one reverse one-way
+
+
+def _wishlist_slice(
+    store: Store,
+    wl: Watchlist,
+    origins: dict[str, Origin],
+    call_budget: int | None,
+    calls_spent: int,
+) -> tuple[list[tuple[str, str]], int, int]:
+    """Which (origin, destination) pairs this run should price.
+
+    The full product of origins and destinations costs several hundred calls,
+    far more than one run can spend under the provider's hourly cap. Walking it
+    in a fixed order would price the same first few origins forever and never
+    reach the rest, so each run resumes from a cursor persisted in the store
+    and wraps around. Every pair is covered once per cycle of runs.
+    """
+    destinations = list(dict.fromkeys(wl.destinations + store.promoted()))
+    pairs = [(o, d) for o in origins for d in destinations if d != o]
+    if not pairs:
+        return pairs, 0, 0
+    if call_budget is None:
+        count = len(pairs)
+    else:
+        count = max(0, min(len(pairs), (call_budget - calls_spent) // CALLS_PER_PAIR))
+    start = int(store.get_meta(CURSOR_KEY, "0") or 0) % len(pairs)
+    return pairs, start, count
 
 
 @dataclass
@@ -152,6 +181,7 @@ def poll(
     today: date | None = None,
     marker: str = "",
     include_discovery: bool = True,
+    call_budget: int | None = None,
 ) -> PollResult:
     today = today or date.today()
     origins = wl.origin_map()
@@ -159,44 +189,40 @@ def poll(
     all_quotes: list[Quote] = []
     reverse_quotes: dict[tuple[str, str], list[Quote]] = {}
     errors: list[str] = []
+    calls = 0
 
-    # Wishlist arm: named destinations, priced as round trips.
-    for origin in origins.values():
-        for destination in wl.destinations:
-            for month in months[:2]:
-                try:
-                    all_quotes += provider.cheap(origin.iata, destination, month, month)
-                except Exception as exc:  # provider errors must not kill the whole run
-                    errors.append(f"cheap {origin.iata}->{destination}: {exc}")
-            # One-way in the *return* direction, to judge whether the way back
-            # is a healthy price or a trap - see _return_leg_z.
-            try:
-                reverse = provider.cheap(destination, origin.iata, months[0])
-                reverse_quotes.setdefault((origin.iata, destination), []).extend(reverse)
-                all_quotes += reverse
-            except Exception as exc:
-                errors.append(f"reverse {destination}->{origin.iata}: {exc}")
-
-    # Discovery arm: broad, cheap-in-calls scanning for the unexpected.
+    # Discovery goes first: about two calls per origin buys coverage of every
+    # destination, so it must never be starved by the wishlist spending the budget.
     if include_discovery:
         for origin in origins.values():
+            calls += 2
             try:
                 all_quotes += provider.city_directions(origin.iata)
-            except Exception as exc:
+            except Exception as exc:  # provider errors must not kill the whole run
                 errors.append(f"city_directions {origin.iata}: {exc}")
             try:
                 all_quotes += provider.latest(origin.iata, one_way=False, trip_duration=10)
             except Exception as exc:
                 errors.append(f"latest {origin.iata}: {exc}")
 
-        for destination in store.promoted():
-            for origin in origins.values():
-                try:
-                    all_quotes += provider.cheap(
-                        origin.iata, destination, months[0], months[0]
-                    )
-                except Exception as exc:
-                    errors.append(f"promoted {origin.iata}->{destination}: {exc}")
+    pairs, start, count = _wishlist_slice(store, wl, origins, call_budget, calls)
+    for i in range(count):
+        origin_iata, destination = pairs[(start + i) % len(pairs)]
+        for month in months[:2]:
+            try:
+                all_quotes += provider.cheap(origin_iata, destination, month, month)
+            except Exception as exc:
+                errors.append(f"cheap {origin_iata}->{destination}: {exc}")
+        # One-way in the *return* direction, to judge whether the way back is a
+        # healthy price or a trap - see _return_leg_z.
+        try:
+            reverse = provider.cheap(destination, origin_iata, months[0])
+            reverse_quotes.setdefault((origin_iata, destination), []).extend(reverse)
+            all_quotes += reverse
+        except Exception as exc:
+            errors.append(f"reverse {destination}->{origin_iata}: {exc}")
+    if pairs:
+        store.set_meta(CURSOR_KEY, str((start + count) % len(pairs)))
 
     recorded = store.record(all_quotes)
     deals = score_quotes(store, wl, all_quotes, origins, reverse_quotes, marker=marker)
