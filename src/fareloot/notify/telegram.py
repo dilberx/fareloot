@@ -16,13 +16,19 @@ class TelegramError(RuntimeError):
 def _send(bot_token: str, chat_id: str, text: str) -> None:
     if not bot_token or not chat_id:
         raise TelegramError("Telegram bot token or chat id is not configured")
-    resp = httpx.post(
-        API.format(token=bot_token),
-        json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True},
-        timeout=15.0,
-    )
+    try:
+        resp = httpx.post(
+            API.format(token=bot_token),
+            json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True},
+            timeout=15.0,
+        )
+    except httpx.HTTPError as exc:
+        # Telegram's API puts the bot token in the URL path, and httpx includes
+        # the request URL in its exception text. This repo's Actions logs are
+        # public, so the original exception must not propagate.
+        raise TelegramError(f"Telegram request failed: {type(exc).__name__}") from None
     if resp.status_code != 200:
-        # Never echo the token; it's already baked into the URL httpx used, not this message.
+        # resp.text is Telegram's JSON error body, which carries no credentials.
         raise TelegramError(f"Telegram API returned HTTP {resp.status_code}: {resp.text[:200]}")
 
 

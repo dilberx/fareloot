@@ -1,4 +1,8 @@
 .env
+# Your real watchlist stays local. The deployed watcher reads it from the
+# FARELOOT_WATCHLIST_YAML repo secret instead, so your airports and destination
+# wishlist are never published. `fareloot init` writes a default copy.
+config/watchlist.yaml
 .venv/
 __pycache__/
 *.py[cod]

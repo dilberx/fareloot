@@ -19,17 +19,57 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Restore price history
+        # This step must never fail quietly. Persist force-pushes whatever ends up
+        # in data/, so treating "remote unreachable" as "no history yet" would
+        # overwrite the accumulated database with a one-run file and leave the old
+        # commit unreachable. Past quotes cannot be re-fetched from Travelpayouts.
+        #
+        # git fetch cannot distinguish those cases: a missing branch and an
+        # erroring remote both exit 128. ls-remote --exit-code separates them by
+        # exit code alone, so failing loudly is possible without parsing
+        # localisable stderr. Anything other than present-or-absent aborts the
+        # job, which skips Persist and leaves the existing history untouched.
         run: |
-          git fetch origin fareloot-data --depth=1 2>/dev/null || true
-          if git show-ref --verify --quiet refs/remotes/origin/fareloot-data; then
-            git show origin/fareloot-data:fareloot.db > data/fareloot.db 2>/dev/null || true
-          fi
           mkdir -p data
+          set +e
+          git ls-remote --exit-code origin refs/heads/fareloot-data >/dev/null 2>&1
+          code=$?
+          set -e
+          case "$code" in
+            0)
+              git fetch --depth=1 origin fareloot-data:refs/remotes/origin/fareloot-data
+              git show origin/fareloot-data:fareloot.db > data/fareloot.db
+              echo "restored $(stat -c%s data/fareloot.db) bytes of price history"
+              ;;
+            2)
+              echo "no fareloot-data branch yet - starting with an empty database"
+              ;;
+            *)
+              echo "::error::cannot reach origin to check for fareloot-data (ls-remote exit $code);"\
+                   "aborting so Persist does not overwrite existing history"
+              exit 1
+              ;;
+          esac
 
       - uses: astral-sh/setup-uv@v3
 
       - name: Install
         run: uv sync --no-dev
+
+      - name: Materialise watchlist
+        # config/watchlist.yaml is gitignored so a personal travel wishlist is
+        # never public. The deployed watcher gets it from a secret instead.
+        env:
+          WATCHLIST: ${{ secrets.FARELOOT_WATCHLIST_YAML }}
+        run: |
+          mkdir -p config
+          if [ -n "$WATCHLIST" ]; then
+            printf '%s' "$WATCHLIST" > config/watchlist.yaml
+            echo "watchlist loaded from secret ($(wc -l < config/watchlist.yaml) lines)"
+          else
+            uv run fareloot init
+            echo "NOTE: no FARELOOT_WATCHLIST_YAML secret set - polling built-in defaults"
+          fi
 
       - name: Poll
         env:
@@ -43,6 +83,7 @@ jobs:
         # main - an hourly binary DB would otherwise balloon the repo forever.
         run: |
           cp data/fareloot.db /tmp/fareloot.db
+          echo "persisting $(stat -c%s /tmp/fareloot.db) bytes of price history"
           git checkout --orphan fareloot-data
           git rm -rf . >/dev/null 2>&1 || true
           cp /tmp/fareloot.db fareloot.db
