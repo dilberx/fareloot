@@ -117,7 +117,11 @@ def _first_two_months() -> list[str]:
 def poll_cmd(
     provider: str = typer.Option("travelpayouts", "--provider", help="'travelpayouts' or 'mock'"),
     notify: str = typer.Option("console", help="'console' or 'telegram'"),
-    max_calls: int = typer.Option(300, help="Safety cap on API calls this run"),
+    max_calls: int = typer.Option(
+        140,
+        help="API calls this run. Kept under the provider's 150/hour limiter so a run never "
+        "sleeps; the wishlist resumes where the last run stopped.",
+    ),
     no_discovery: bool = typer.Option(False, help="Skip the broad discovery arm"),
 ) -> None:
     """Fetch fresh prices, score them, and alert on anything hot."""
@@ -128,7 +132,14 @@ def poll_cmd(
     p = _make_provider(provider, settings, max_calls=max_calls)
     with Store(DEFAULT_DB_PATH) as store:
         result = poll(
-            p, store, wl, marker=settings.tp_marker, include_discovery=not no_discovery
+            p,
+            store,
+            wl,
+            marker=settings.tp_marker,
+            include_discovery=not no_discovery,
+            # Plan below the hard cap so retries on flaky calls don't exhaust it
+            # and drop the last few pairs of the slice.
+            call_budget=int(max_calls * 0.9),
         )
         store.prune()
 

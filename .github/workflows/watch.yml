@@ -19,6 +19,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Restore price history
+        id: restore
         # This step must never fail quietly. Persist force-pushes whatever ends up
         # in data/, so treating "remote unreachable" as "no history yet" would
         # overwrite the accumulated database with a one-run file and leave the old
@@ -81,7 +82,17 @@ jobs:
       - name: Persist price history
         # Force-pushed as a single commit to an orphan branch, not committed to
         # main - an hourly binary DB would otherwise balloon the repo forever.
+        #
+        # Runs even when Poll failed, so a Telegram outage or a missing chat id
+        # does not throw away the prices that were already collected; the job
+        # still goes red. Gated on a successful restore, because pushing after
+        # an inconclusive restore would overwrite the accumulated history.
+        if: ${{ !cancelled() && steps.restore.outcome == 'success' && hashFiles('data/fareloot.db') != '' }}
         run: |
+          if [ -e data/fareloot.db-journal ]; then
+            echo "::error::hot SQLite journal present - the poll was killed mid-write; not persisting"
+            exit 1
+          fi
           cp data/fareloot.db /tmp/fareloot.db
           echo "persisting $(stat -c%s /tmp/fareloot.db) bytes of price history"
           git checkout --orphan fareloot-data
