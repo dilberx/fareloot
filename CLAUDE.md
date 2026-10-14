@@ -86,7 +86,20 @@ testing runs against.
 
 ### Deployment
 
-`.github/workflows/watch.yml` runs `fareloot poll` hourly via GitHub Actions cron (free only on
-**public** repos on the free plan — see README for why). Price history persists across runs on an
-orphan `fareloot-data` branch (force-pushed each run) rather than in `main`'s commit history, to
-keep the repo from growing forever with a binary SQLite file.
+`.github/workflows/watch.yml` runs `fareloot poll` on GitHub Actions cron. Price history persists
+across runs on an orphan `fareloot-data` branch (force-pushed each run), not in `main`'s commit
+history, to keep the repo from growing forever with a binary SQLite file.
+
+Three things here are easy to break:
+
+- **`config/watchlist.yaml` is gitignored.** The workflow writes it from the
+  `FARELOOT_WATCHLIST_YAML` secret before polling, so a personal wishlist is never public. That
+  means the built-in `DEFAULT_WATCHLIST_YAML` in `config.py` is the only version-controlled copy,
+  and `tests/test_config.py` exists to stop it rotting.
+- **The restore step must create `data/` before redirecting into it,** and must use an explicit
+  refspec when fetching `fareloot-data`. Both were wrong originally, and because the failures were
+  swallowed by `|| true` the step reported success while restoring nothing, silently resetting every
+  baseline each run. Keep that step loud.
+- **The repo must stay public.** Branch protection on a private repo needs GitHub Pro; the API
+  returns 403 and `main` reverts to unprotected. Scheduled runs are also best-effort and land every
+  7-8 hours in practice, not hourly.

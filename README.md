@@ -51,14 +51,32 @@ scoring and tiers work before signing up for anything.
 
 ## Running it continuously
 
-`.github/workflows/watch.yml` polls hourly on GitHub Actions for free (the repo
-needs to be public for cron to run on the free plan). Push this repo to GitHub,
-add `FARELOOT_TP_TOKEN`, `FARELOOT_TELEGRAM_BOT_TOKEN`, and
-`FARELOOT_TELEGRAM_CHAT_ID` as repository secrets, then trigger the workflow
-once manually (Actions tab -> watch -> Run workflow) to confirm it works.
+`.github/workflows/watch.yml` runs `fareloot poll` on GitHub Actions for free.
+Add these as repository secrets (Settings -> Secrets and variables -> Actions),
+then trigger it once manually from the Actions tab to confirm it works:
 
-Price history is kept on a separate `fareloot-data` branch rather than in the
-commit history of `main`, so the repo doesn't grow forever.
+| Secret | Purpose |
+|---|---|
+| `FARELOOT_TP_TOKEN` | Travelpayouts API token. Without it the poll exits immediately. |
+| `FARELOOT_TELEGRAM_BOT_TOKEN` | Your @BotFather bot token. |
+| `FARELOOT_TELEGRAM_CHAT_ID` | Where alerts get sent. |
+| `FARELOOT_WATCHLIST_YAML` | Optional. The full contents of your `config/watchlist.yaml`. |
+
+`config/watchlist.yaml` is gitignored, so your home airports and destination
+wishlist stay off a public repo. The workflow writes the file from
+`FARELOOT_WATCHLIST_YAML` before polling. With that secret unset it falls back to
+the built-in defaults and says so in the run log. To update your watchlist in the
+deployed watcher, paste the edited file into that secret.
+
+Price history is kept on a separate `fareloot-data` branch, not in `main`'s
+commit history, so the repo doesn't grow forever.
+
+Two things about this setup are worth knowing. Scheduled runs are best-effort:
+observed cadence is closer to every 7 or 8 hours than the hourly cron requests,
+because GitHub heavily throttles `schedule` on free public repos. And the repo
+has to stay public, because branch protection on a private repo requires GitHub
+Pro. Actions minutes are not the constraint either way, since a month of polling
+costs about 60 of the 2,000 free private minutes.
 
 ## Commands
 
