@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .models import Origin, Reach
@@ -113,10 +113,33 @@ class Watchlist(BaseModel):
         )
 
 
+class WatchlistError(ValueError):
+    """A watchlist that cannot be loaded, described without echoing its contents."""
+
+
 def load_watchlist(path: Path = DEFAULT_CONFIG_PATH) -> Watchlist:
+    """Load the watchlist, raising WatchlistError with locations but no values.
+
+    In deployment the file comes from a secret and errors land in a public
+    Actions log. pydantic re-renders invalid entries as a dict, which GitHub's
+    secret masking cannot match, so neither parser's message is passed through.
+    """
     if not path.exists():
         raise FileNotFoundError(f"{path} not found - run `fareloot init` first")
-    return Watchlist.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        mark = getattr(exc, "problem_mark", None)
+        where = f" near line {mark.line + 1}" if mark else ""
+        raise WatchlistError(f"watchlist is not valid YAML{where}") from None
+    try:
+        return Watchlist.model_validate(raw)
+    except ValidationError as exc:
+        problems = "; ".join(
+            f"{'.'.join(str(p) for p in err['loc']) or '(root)'}: {err['msg']}"
+            for err in exc.errors(include_input=False, include_url=False)
+        )
+        raise WatchlistError(f"watchlist is invalid - {problems}") from None
 
 
 DEFAULT_WATCHLIST_YAML = """\

@@ -64,6 +64,11 @@ class PollResult:
     observations_recorded: int
     calls_made: int
     errors: list[str]
+    calls_ok: int = 0
+
+    @property
+    def all_calls_failed(self) -> bool:
+        return bool(self.errors) and self.calls_ok == 0
 
 
 def _depart_candidates(today: date, months: int) -> list[str]:
@@ -195,6 +200,11 @@ class SeedResult:
     start: int
     cycle_completed: bool
     errors: list[str]
+    calls_ok: int = 0
+
+    @property
+    def all_calls_failed(self) -> bool:
+        return bool(self.errors) and self.calls_ok == 0
 
 
 def seed(
@@ -227,15 +237,21 @@ def seed(
     start = int(store.get_meta(SEED_CURSOR_KEY, "0") or 0) % len(tasks)
 
     recorded = 0
+    ok = 0
     errors: list[str] = []
     for i in range(count):
         origin_iata, destination, month = tasks[(start + i) % len(tasks)]
         for a, b in ((origin_iata, destination), (destination, origin_iata)):
             try:
                 recorded += store.record(usable_quotes(wl, provider.month_matrix(a, b, month)))
+                ok += 1
             except Exception as exc:
                 errors.append(f"month_matrix {a}->{b} {month}: {exc}")
-    store.set_meta(SEED_CURSOR_KEY, str((start + count) % len(tasks)))
+    # A run where every call failed (a revoked token, an outage) seeded nothing, so
+    # it must not move the cursor past those tasks or report the cycle as done.
+    worked = ok > 0 or not errors
+    if worked:
+        store.set_meta(SEED_CURSOR_KEY, str((start + count) % len(tasks)))
 
     return SeedResult(
         recorded=recorded,
@@ -243,8 +259,9 @@ def seed(
         tasks_done=count,
         tasks_total=len(tasks),
         start=start,
-        cycle_completed=start + count >= len(tasks),
+        cycle_completed=worked and start + count >= len(tasks),
         errors=errors,
+        calls_ok=ok,
     )
 
 
@@ -265,38 +282,43 @@ def poll(
     reverse_quotes: dict[tuple[str, str], list[Quote]] = {}
     errors: list[str] = []
     calls = 0
+    ok = 0
+
+    def attempt(label: str, fetch, *args, **kwargs) -> list[Quote]:
+        # Provider errors must not kill the whole run, but they must be counted:
+        # a run where nothing succeeded has to fail visibly, not go green empty.
+        nonlocal ok
+        try:
+            quotes = fetch(*args, **kwargs)
+        except Exception as exc:
+            errors.append(f"{label}: {exc}")
+            return []
+        ok += 1
+        return quotes
 
     # Discovery goes first: about two calls per origin buys coverage of every
     # destination, so it must never be starved by the wishlist spending the budget.
     if include_discovery:
         for origin in origins.values():
             calls += 2
-            try:
-                all_quotes += provider.city_directions(origin.iata)
-            except Exception as exc:  # provider errors must not kill the whole run
-                errors.append(f"city_directions {origin.iata}: {exc}")
-            try:
-                all_quotes += provider.latest(origin.iata, one_way=False, trip_duration=10)
-            except Exception as exc:
-                errors.append(f"latest {origin.iata}: {exc}")
+            iata = origin.iata
+            all_quotes += attempt(f"city_directions {iata}", provider.city_directions, iata)
+            all_quotes += attempt(
+                f"latest {iata}", provider.latest, iata, one_way=False, trip_duration=10
+            )
 
     pairs, start, count = _wishlist_slice(store, wl, origins, call_budget, calls)
     for i in range(count):
-        origin_iata, destination = pairs[(start + i) % len(pairs)]
+        o, d = pairs[(start + i) % len(pairs)]
         for month in months[:2]:
-            try:
-                all_quotes += provider.cheap(origin_iata, destination, month, month)
-            except Exception as exc:
-                errors.append(f"cheap {origin_iata}->{destination}: {exc}")
+            all_quotes += attempt(f"cheap {o}->{d}", provider.cheap, o, d, month, month)
         # One-way in the *return* direction, to judge whether the way back is a
         # healthy price or a trap - see _return_leg_z.
-        try:
-            reverse = provider.cheap(destination, origin_iata, months[0])
-            reverse_quotes.setdefault((origin_iata, destination), []).extend(reverse)
-            all_quotes += reverse
-        except Exception as exc:
-            errors.append(f"reverse {destination}->{origin_iata}: {exc}")
-    if pairs:
+        reverse = attempt(f"reverse {d}->{o}", provider.cheap, d, o, months[0])
+        reverse_quotes.setdefault((o, d), []).extend(reverse)
+        all_quotes += reverse
+    # Same rule as seed: if nothing succeeded, those pairs were never priced.
+    if pairs and (ok > 0 or not errors):
         store.set_meta(CURSOR_KEY, str((start + count) % len(pairs)))
 
     all_quotes = usable_quotes(wl, all_quotes)
@@ -320,7 +342,25 @@ def poll(
         ):
             to_alert.append(deal)
 
-    for deal in to_alert:
+    calls_made = getattr(provider, "calls_made", 0)
+    return PollResult(
+        deals=deals,
+        to_alert=to_alert,
+        observations_recorded=recorded,
+        calls_made=calls_made,
+        errors=errors,
+        calls_ok=ok,
+    )
+
+
+def record_alerts(store: Store, deals: list[Deal]) -> None:
+    """Mark deals as alerted, so the cooldown suppresses repeats.
+
+    Call this only for deals that were actually delivered. Recording before
+    sending meant a failed Telegram call left the deal marked as sent, and the
+    cooldown then hid the real deal for 48 hours.
+    """
+    for deal in deals:
         store.record_alert(
             deal.quote.origin,
             deal.quote.destination,
@@ -330,14 +370,18 @@ def poll(
             deal.tier,
         )
 
-    calls_made = getattr(provider, "calls_made", 0)
-    return PollResult(
-        deals=deals,
-        to_alert=to_alert,
-        observations_recorded=recorded,
-        calls_made=calls_made,
-        errors=errors,
-    )
+
+def summarize_errors(errors: list[str]) -> list[tuple[str, int]]:
+    """Group errors by cause with the route stripped, for public logs.
+
+    Error strings start with the route ("cheap COK->BKK: ..."), and route pairs
+    reveal the private watchlist.
+    """
+    counts: dict[str, int] = {}
+    for err in errors:
+        cause = err.split(": ", 1)[1] if ": " in err else err
+        counts[cause] = counts.get(cause, 0) + 1
+    return sorted(counts.items(), key=lambda kv: -kv[1])
 
 
 def ranked_total(deal: Deal, wl: Watchlist) -> float:
