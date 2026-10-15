@@ -68,6 +68,10 @@ def seed(
         help="API calls this run, kept under the provider's 150/hour limiter. Each run "
         "resumes where the last one stopped; run it again until it reports a full cycle.",
     ),
+    destinations: str = typer.Option(
+        "",
+        help="Comma-separated destinations to seed, e.g. SHJ,RKT. Empty seeds them all.",
+    ),
 ) -> None:
     """Bootstrap baselines from month-matrix calendars, in both directions."""
     wl = _load_watchlist()
@@ -76,7 +80,11 @@ def seed(
     with Store(DEFAULT_DB_PATH) as store:
         # The mock costs nothing, so seed it all at once for local demos.
         budget = None if provider == "mock" else int(max_calls * 0.9)
-        r = seed_routes(p, store, wl, call_budget=budget)
+        only = [d.strip() for d in destinations.split(",") if d.strip()] or None
+        try:
+            r = seed_routes(p, store, wl, call_budget=budget, only=only)
+        except ValueError as exc:
+            _fail(str(exc))
 
     _report_errors(r.errors[:5] if not _in_ci() else r.errors)
     if not _in_ci() and len(r.errors) > 5:

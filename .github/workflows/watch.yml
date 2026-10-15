@@ -14,6 +14,10 @@ on:
         type: choice
         options: [poll, seed, test-alert]
         default: poll
+      seed_destinations:
+        description: "seed only: comma-separated destinations, e.g. SHJ,RKT (empty = all)"
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -107,7 +111,10 @@ jobs:
         if: ${{ inputs.mode == 'seed' }}
         env:
           FARELOOT_TP_TOKEN: ${{ secrets.FARELOOT_TP_TOKEN }}
-        run: uv run fareloot seed
+          # Passed through env, not interpolated into the script, so the input
+          # can't inject shell.
+          SEED_DESTINATIONS: ${{ inputs.seed_destinations }}
+        run: uv run fareloot seed --destinations "$SEED_DESTINATIONS"
 
       - name: Test alert
         # A poll that finds no deals never touches Telegram, so wrong Telegram

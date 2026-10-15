@@ -271,6 +271,7 @@ def seed(
     *,
     today: date | None = None,
     call_budget: int | None = None,
+    only: list[str] | None = None,
 ) -> SeedResult:
     """Bootstrap baselines from month-matrix calendars, a rotating slice per run.
 
@@ -283,6 +284,16 @@ def seed(
     origins = wl.origin_map()
     months = _depart_candidates(today, 2)
     destinations = list(dict.fromkeys(wl.destinations))
+    cursor_key = SEED_CURSOR_KEY
+    if only:
+        wanted = [d.upper() for d in only]
+        unknown = sorted(set(wanted) - set(destinations))
+        if unknown:
+            raise ValueError(f"not in the watchlist's destinations: {', '.join(unknown)}")
+        destinations = [d for d in destinations if d in wanted]
+        # A filtered run has its own task list, so it gets its own cursor and
+        # leaves the full cycle's position untouched.
+        cursor_key = f"{SEED_CURSOR_KEY}:{','.join(sorted(wanted))}"
     tasks = [(o, d, m) for o in origins for d in destinations if d != o for m in months]
     if not tasks:
         return SeedResult(0, 0, 0, 0, 0, False, [])
@@ -291,7 +302,7 @@ def seed(
         count = len(tasks)
     else:
         count = max(0, min(len(tasks), call_budget // CALLS_PER_SEED_TASK))
-    start = int(store.get_meta(SEED_CURSOR_KEY, "0") or 0) % len(tasks)
+    start = int(store.get_meta(cursor_key, "0") or 0) % len(tasks)
 
     recorded = 0
     ok = 0
@@ -308,7 +319,7 @@ def seed(
     # it must not move the cursor past those tasks or report the cycle as done.
     worked = ok > 0 or not errors
     if worked:
-        store.set_meta(SEED_CURSOR_KEY, str((start + count) % len(tasks)))
+        store.set_meta(cursor_key, str((start + count) % len(tasks)))
 
     return SeedResult(
         recorded=recorded,
