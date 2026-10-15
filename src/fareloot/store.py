@@ -132,10 +132,23 @@ class Store:
         destination: str,
         trip_length: int | None,
         *,
+        band: tuple[int, int] | None = None,
         days: int = HISTORY_DAYS,
     ) -> list[float]:
-        """Prices seen on this exact route shape, for the baseline."""
+        """Prices seen on this route shape, for the baseline.
+
+        With `band`, every round trip whose length falls inside it counts, so a
+        9-day quote is judged against 7-10 day history, not 9-day history alone.
+        """
         since = (_now() - timedelta(days=days)).isoformat()
+        if band is not None:
+            rows = self.conn.execute(
+                """SELECT price_inr FROM observations
+                   WHERE origin=? AND destination=? AND trip_length BETWEEN ? AND ?
+                     AND observed_at >= ?""",
+                (origin, destination, band[0], band[1], since),
+            ).fetchall()
+            return [float(r["price_inr"]) for r in rows]
         rows = self.conn.execute(
             """SELECT price_inr FROM observations
                WHERE origin=? AND destination=? AND trip_length IS ? AND observed_at >= ?""",

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .models import Origin, Reach
@@ -73,9 +73,30 @@ class Watchlist(BaseModel):
     destinations: list[str] = Field(default_factory=list)
     max_reach_hours: float = 14.0
     train_hour_value_inr: float = 80.0
-    trip_lengths: list[int] = Field(default_factory=lambda: [7, 10, 14])
+    trip_bands: list[tuple[int, int]] = Field(
+        default_factory=lambda: [(3, 6), (7, 10), (11, 21)]
+    )
     search_horizon_months: int = 6
     alerts: AlertSettings = Field(default_factory=AlertSettings)
+
+    @field_validator("trip_bands")
+    @classmethod
+    def _bands_are_ordered_and_disjoint(cls, bands: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        bands = sorted(bands)
+        for lo, hi in bands:
+            if lo < 1 or hi < lo:
+                raise ValueError(f"trip band {lo}-{hi} must satisfy 1 <= low <= high")
+        for (_, prev_hi), (lo, _) in zip(bands, bands[1:], strict=False):
+            if lo <= prev_hi:
+                raise ValueError("trip bands must not overlap")
+        return bands
+
+    def band_for(self, trip_length: int) -> tuple[int, int] | None:
+        """The band a round trip pools its baseline with, or None to discard it."""
+        for lo, hi in self.trip_bands:
+            if lo <= trip_length <= hi:
+                return (lo, hi)
+        return None
 
     def origin_map(self) -> dict[str, Origin]:
         return {o.iata.upper(): o.to_origin() for o in self.origins}
@@ -149,8 +170,12 @@ max_reach_hours: 14
 # each other. It is never shown as money and never added to a quoted price.
 train_hour_value_inr: 80
 
-# Round-trip durations to price, in days.
-trip_lengths: [7, 10, 14]
+# Round trips are only kept if their length in days falls inside one of these
+# bands, and each one is judged against the history of its whole band. Real fare
+# data comes back in dozens of different trip lengths, including same-day and
+# overnight returns that aren't trips anyone takes, so pooling keeps baselines
+# deep and dropping the rest keeps cheap non-trips from alerting.
+trip_bands: [[3, 6], [7, 10], [11, 21]]
 search_horizon_months: 6
 
 alerts:

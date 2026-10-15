@@ -330,3 +330,33 @@ def test_seed_respects_budget_and_unbounded_seeds_everything(store):
     p2 = _SeedRecordingProvider(today=today)
     r2 = seed(p2, store, wl, today=today)
     assert r2.tasks_done == r2.tasks_total == 20
+
+
+def test_same_day_and_overnight_round_trips_are_never_recorded_or_scored(store):
+    from fareloot.watcher import usable_quotes
+
+    wl = _watchlist(["GYD"])
+    d = date(2026, 12, 1)
+
+    def q(days):
+        return Quote(origin="COK", destination="GYD", depart_date=d,
+                     return_date=d.replace(day=1 + days), price_inr=5000, distance_km=3000)
+
+    one_way = Quote(origin="GYD", destination="COK", depart_date=d, price_inr=4000)
+    kept = usable_quotes(wl, [q(0), q(1), q(2), q(3), q(9), one_way])
+    assert sorted(x.trip_length for x in kept if x.trip_length is not None) == [3, 9]
+    assert one_way in kept
+
+
+def test_baseline_pools_the_whole_trip_band(store):
+    wl = _watchlist(["GYD"])
+    d = date(2026, 12, 1)
+    history = [
+        Quote(origin="COK", destination="GYD", depart_date=d.replace(day=1 + i),
+              return_date=d.replace(day=1 + i + length), price_inr=20_000 + 100 * i)
+        for i, length in enumerate([7, 8, 10, 7, 8, 10, 7, 8])
+    ]
+    store.record(history)
+    # A 9-day quote has no 9-day history at all, but the 7-10 band does.
+    assert store.route_history("COK", "GYD", 9) == []
+    assert len(store.route_history("COK", "GYD", 9, band=wl.band_for(9))) == 8

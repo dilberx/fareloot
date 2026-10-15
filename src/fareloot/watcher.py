@@ -22,6 +22,14 @@ CURSOR_KEY = "wishlist_cursor"
 CALLS_PER_PAIR = 3  # two round-trip months plus one reverse one-way
 
 
+def usable_quotes(wl: Watchlist, quotes: list[Quote]) -> list[Quote]:
+    """Drop round trips whose length falls outside every configured trip band.
+
+    One-way quotes are always kept; they back the return-leg gate.
+    """
+    return [q for q in quotes if q.trip_length is None or wl.band_for(q.trip_length)]
+
+
 def _wishlist_slice(
     store: Store,
     wl: Watchlist,
@@ -120,7 +128,8 @@ def _score_quote(
     quote: Quote,
     reverse_quotes: dict[tuple[str, str], list[Quote]],
 ) -> Scored:
-    history = store.route_history(quote.origin, quote.destination, quote.trip_length)
+    band = wl.band_for(quote.trip_length) if quote.trip_length is not None else None
+    history = store.route_history(quote.origin, quote.destination, quote.trip_length, band=band)
     return_z = _return_leg_z(store, quote, reverse_quotes)
     global_km = store.global_inr_per_km() if not history else []
     return score(
@@ -155,7 +164,7 @@ def score_quotes(
     origins = origins if origins is not None else wl.origin_map()
     reverse_quotes = reverse_quotes or {}
     deals: list[Deal] = []
-    for quote in quotes:
+    for quote in usable_quotes(wl, quotes):
         origin = origins.get(quote.origin)
         if origin is None:
             continue
@@ -223,7 +232,7 @@ def seed(
         origin_iata, destination, month = tasks[(start + i) % len(tasks)]
         for a, b in ((origin_iata, destination), (destination, origin_iata)):
             try:
-                recorded += store.record(provider.month_matrix(a, b, month))
+                recorded += store.record(usable_quotes(wl, provider.month_matrix(a, b, month)))
             except Exception as exc:
                 errors.append(f"month_matrix {a}->{b} {month}: {exc}")
     store.set_meta(SEED_CURSOR_KEY, str((start + count) % len(tasks)))
@@ -290,6 +299,7 @@ def poll(
     if pairs:
         store.set_meta(CURSOR_KEY, str((start + count) % len(pairs)))
 
+    all_quotes = usable_quotes(wl, all_quotes)
     recorded = store.record(all_quotes)
     deals = score_quotes(store, wl, all_quotes, origins, reverse_quotes, marker=marker)
 
