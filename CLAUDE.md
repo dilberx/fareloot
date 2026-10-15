@@ -63,6 +63,17 @@ own rows. Its cooldown is per route (`alert_key` returns `LOWEST_KEY`), and `pol
 cheapest qualifying deal per route per run; keyed per date, every date dipping under the old low
 would alert separately. Each of these is pinned by a test in `tests/test_lowest_fare.py`.
 
+### Live check before sending (`confirm.py`)
+
+With `FARELOOT_SERPAPI_KEY` set, the CLI prices each alert on Google Flights via SerpApi just
+before sending. Confirmed (within `STALE_TOLERANCE`, 10%) sends with the live price; stale drops
+it and records it with `record_alerts` so the dead cache entry cools down instead of spending a
+search every run; anything else (no key, error, no results, monthly cap in `meta`
+`live_checks:YYYY-MM`) sends labelled unconfirmed. A checker fault must never cost a real deal.
+The key is a URL query parameter, so request exceptions are re-raised without the URL, as in
+`notify/telegram.py`. SerpApi's docs don't state that a round-trip `price` covers both legs;
+`fareloot live-check` exists to verify that against a real response.
+
 ### Hotness scoring (`scoring.py`)
 
 A weighted blend of five components (depth below baseline, rarity, price-per-km value, absolute

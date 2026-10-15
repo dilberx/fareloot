@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NoReturn
 
@@ -215,13 +216,33 @@ def poll_cmd(
         render(result.deals, wl)
         delivered = result.to_alert
     else:
+        from .confirm import SerpApiFlights, confirm_alerts
         from .notify.telegram import TelegramError, send_deals
 
+        to_send = result.to_alert
+        if to_send:
+            confirmer = SerpApiFlights(settings.serpapi_key) if settings.serpapi_key else None
+            with Store(DEFAULT_DB_PATH) as store:
+                to_send, stale = confirm_alerts(
+                    result.to_alert,
+                    confirmer,
+                    store,
+                    monthly_cap=settings.serpapi_monthly_cap,
+                    now=datetime.now(UTC),
+                )
+                # A fare that is gone live is handled, not lost: cool it down so
+                # the same stale cache entry doesn't spend a search every run.
+                record_alerts(store, stale)
+            confirmed = sum(1 for d in to_send if d.live_price_inr is not None)
+            typer.echo(
+                f"Live check: {confirmed} confirmed, {len(stale)} dropped as stale, "
+                f"{len(to_send) - confirmed} sent unconfirmed."
+            )
         try:
             delivered = send_deals(
                 settings.telegram_bot_token,
                 settings.telegram_chat_id,
-                result.to_alert,
+                to_send,
                 settings.tp_marker,
             )
         except TelegramError as exc:
@@ -229,7 +250,7 @@ def poll_cmd(
             # instead of being hidden by the cooldown.
             with Store(DEFAULT_DB_PATH) as store:
                 record_alerts(store, exc.delivered)
-            _fail(f"{exc} ({len(exc.delivered)} of {len(result.to_alert)} alerts delivered)")
+            _fail(f"{exc} ({len(exc.delivered)} of {len(to_send)} alerts delivered)")
         typer.echo(f"Sent {len(delivered)} alert(s) to Telegram.")
 
     with Store(DEFAULT_DB_PATH) as store:
@@ -301,6 +322,53 @@ def health(
         typer.echo("Sent the warning to Telegram.")
     # Red in the Actions tab too, for anyone who does look there.
     raise typer.Exit(1)
+
+
+@app.command()
+def live_check(
+    origin: str = typer.Option("COK"),
+    destination: str = typer.Option("DXB"),
+    days_ahead: int = typer.Option(30, help="Departure this many days from today"),
+    trip_days: int = typer.Option(7),
+) -> None:
+    """Spend two SerpApi searches pricing one route live, round trip and one way.
+
+    Confirms the key works, and shows whether the round-trip figure is the total
+    for both legs: it should sit well above a single one-way fare.
+    """
+    from datetime import date, timedelta
+
+    from .confirm import ConfirmError, SerpApiFlights
+    from .models import Quote
+
+    settings = Settings()
+    if not settings.serpapi_key:
+        _fail("Set FARELOOT_SERPAPI_KEY first.")
+    depart = date.today() + timedelta(days=days_ahead)
+    rt = Quote(
+        origin=origin.upper(),
+        destination=destination.upper(),
+        depart_date=depart,
+        return_date=depart + timedelta(days=trip_days),
+        price_inr=0,
+    )
+    ow = Quote(
+        origin=origin.upper(), destination=destination.upper(), depart_date=depart, price_inr=0
+    )
+    flights = SerpApiFlights(settings.serpapi_key)
+    try:
+        rt_price, ow_price = flights.live_price(rt), flights.live_price(ow)
+    except ConfirmError as exc:
+        _fail(str(exc))
+    typer.echo(f"{rt.origin}->{rt.destination} departing {depart}, {trip_days}-day trip")
+    typer.echo(f"  round trip: {f'Rs {rt_price:,}' if rt_price else 'no results'}")
+    typer.echo(f"  one way:    {f'Rs {ow_price:,}' if ow_price else 'no results'}")
+    if rt_price and ow_price:
+        ratio = rt_price / ow_price
+        verdict = "both legs (total)" if ratio >= 1.3 else "possibly one leg only - check"
+        typer.echo(
+            f"  round trip / one way = {ratio:.2f} -> round-trip figure looks like {verdict}"
+        )
 
 
 @app.command()

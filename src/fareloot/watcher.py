@@ -480,6 +480,10 @@ def format_alert_lines(deal: Deal, marker: str = "") -> list[str]:
         )
     else:
         lines.append(f"one way Rs {q.price_inr:,}  ({q.depart_date:%d %b})")
+    if deal.live_price_inr is not None:
+        lines.append(f"  live on Google Flights: Rs {deal.live_price_inr:,}")
+    elif deal.live_note:
+        lines.append(f"  {deal.live_note}")
     for reason in deal.reasons:
         lines.append(f"  {reason}")
     lines.append(f"  via {aviasales(q, marker)}")

@@ -49,6 +49,17 @@ scoring and tiers work before signing up for anything.
 3. Add both to `.env` as `FARELOOT_TELEGRAM_BOT_TOKEN` and `FARELOOT_TELEGRAM_CHAT_ID`.
 4. `uv run fareloot test-alert` - confirm it reaches your phone.
 
+### Live-checking alerts
+
+Travelpayouts prices come from a search cache and can be hours old. With a free
+[SerpApi](https://serpapi.com) key in `FARELOOT_SERPAPI_KEY`, each alert is
+priced live on Google Flights first. Within 10% of the cached price, it is sent
+with the live price. More than 10% higher, it is dropped as stale. Anything else
+(no results, an error, or the monthly cap of 200 searches reached) still sends,
+labelled as not live-checked. Check the key with
+`gh workflow run watch.yml -f mode=live-check`, which prices one route as a round
+trip and one way and reports whether the round-trip figure covers both legs.
+
 ### Routes you fly often
 
 Normally a route alerts only on a big drop: 25% and Rs 3,000 below its usual
@@ -72,6 +83,7 @@ then trigger it once manually from the Actions tab to confirm it works:
 | `FARELOOT_TELEGRAM_BOT_TOKEN` | Your @BotFather bot token. |
 | `FARELOOT_TELEGRAM_CHAT_ID` | Where alerts get sent. |
 | `FARELOOT_WATCHLIST_YAML` | Optional. The full contents of your `config/watchlist.yaml`. |
+| `FARELOOT_SERPAPI_KEY` | Optional. Live-checks each alert on Google Flights before sending (free tier: 250 searches/month). |
 | `FARELOOT_DATA_KEY` | Encrypts the stored price history. Required; runs refuse to start without it. |
 
 `config/watchlist.yaml` is gitignored, so your home airports and destination
