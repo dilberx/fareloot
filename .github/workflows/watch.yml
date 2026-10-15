@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "poll = normal run; seed = bootstrap baselines (run until it reports a full cycle)"
+        description: "poll = normal run; seed = bootstrap baselines (run until it reports a full cycle); test-alert = send one Telegram message to check the secrets"
         type: choice
-        options: [poll, seed]
+        options: [poll, seed, test-alert]
         default: poll
 
 permissions:
@@ -88,9 +88,19 @@ jobs:
           FARELOOT_TP_TOKEN: ${{ secrets.FARELOOT_TP_TOKEN }}
         run: uv run fareloot seed
 
+      - name: Test alert
+        # A poll that finds no deals never touches Telegram, so wrong Telegram
+        # secrets would stay invisible until the first real deal. This sends one
+        # message with the secrets exactly as stored.
+        if: ${{ inputs.mode == 'test-alert' }}
+        env:
+          FARELOOT_TELEGRAM_BOT_TOKEN: ${{ secrets.FARELOOT_TELEGRAM_BOT_TOKEN }}
+          FARELOOT_TELEGRAM_CHAT_ID: ${{ secrets.FARELOOT_TELEGRAM_CHAT_ID }}
+        run: uv run fareloot test-alert
+
       - name: Poll
         # Scheduled runs have no inputs, so an empty mode means poll.
-        if: ${{ inputs.mode != 'seed' }}
+        if: ${{ inputs.mode != 'seed' && inputs.mode != 'test-alert' }}
         env:
           FARELOOT_TP_TOKEN: ${{ secrets.FARELOOT_TP_TOKEN }}
           FARELOOT_TELEGRAM_BOT_TOKEN: ${{ secrets.FARELOOT_TELEGRAM_BOT_TOKEN }}
@@ -105,7 +115,7 @@ jobs:
         # does not throw away the prices that were already collected; the job
         # still goes red. Gated on a successful restore, because pushing after
         # an inconclusive restore would overwrite the accumulated history.
-        if: ${{ !cancelled() && steps.restore.outcome == 'success' && hashFiles('data/fareloot.db') != '' }}
+        if: ${{ !cancelled() && inputs.mode != 'test-alert' && steps.restore.outcome == 'success' && hashFiles('data/fareloot.db') != '' }}
         run: |
           if [ -e data/fareloot.db-journal ]; then
             echo "::error::hot SQLite journal present - the poll was killed mid-write; not persisting"

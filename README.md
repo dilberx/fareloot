@@ -78,6 +78,13 @@ workflow manually with mode **seed** (Actions -> watch -> Run workflow), or:
 gh workflow run watch.yml -f mode=seed
 ```
 
+To check the Telegram secrets without waiting for a real deal, send one test
+message:
+
+```bash
+gh workflow run watch.yml -f mode=test-alert
+```
+
 Each seed run covers the next slice of routes within the API budget and logs how
 many runs remain. Repeat until it reports that every route has been seeded,
 about 8 runs with the default watchlist. Scheduled runs keep adding history on
