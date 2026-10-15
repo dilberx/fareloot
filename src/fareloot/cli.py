@@ -260,6 +260,42 @@ def deals(
 
 
 @app.command()
+def health(
+    last_main_commit: str = typer.Option("", help="ISO time of the last commit to main"),
+    last_watch_success: str = typer.Option("", help="ISO time of the last successful watch run"),
+    watch_state: str = typer.Option("active", help="State of watch.yml from the Actions API"),
+    notify: str = typer.Option("console", help="'console' or 'telegram'"),
+) -> None:
+    """Check the deployed watcher is alive and will stay alive; warn if not."""
+    from datetime import UTC, datetime
+
+    from .health import assess
+    from .providers.base import parse_dt
+
+    report = assess(
+        datetime.now(UTC),
+        parse_dt(last_main_commit),
+        parse_dt(last_watch_success),
+        watch_state,
+    )
+    if report.ok:
+        typer.echo("fareloot is healthy.")
+        return
+    message = "fareloot needs attention:\n\n" + "\n\n".join(f"- {w}" for w in report.warnings)
+    typer.echo(message)
+    if notify == "telegram":
+        settings = Settings()
+        if not settings.has_telegram:
+            _fail("health check failed and Telegram is not configured to report it")
+        from .notify.telegram import _send
+
+        _send(settings.telegram_bot_token, settings.telegram_chat_id, message)
+        typer.echo("Sent the warning to Telegram.")
+    # Red in the Actions tab too, for anyone who does look there.
+    raise typer.Exit(1)
+
+
+@app.command()
 def test_alert() -> None:
     """Send a single test message to confirm Telegram is wired up."""
     settings = Settings()

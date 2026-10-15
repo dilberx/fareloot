@@ -1,0 +1,75 @@
+name: keepalive
+
+# GitHub disables scheduled workflows in a public repo after 60 days without
+# activity, and reports suggest only commits to the default branch count.
+# main is protected, so nothing automated can commit there; a person has to.
+# This checks daily and warns on Telegram from day 45, and whenever the watcher
+# has stopped succeeding. See src/fareloot/health.py.
+
+on:
+  schedule:
+    - cron: "41 5 * * *" # daily, off the hour to dodge GitHub's traffic spike
+  workflow_dispatch: {}
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gather facts
+        # Read the state before re-enabling, so a disabled watcher is reported
+        # even though the next step turns it back on. An empty value is passed
+        # through and reported as a warning, never treated as healthy.
+        id: facts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          main_commit=$(gh api "repos/$REPO/commits/main" --jq .commit.committer.date || true)
+          watch_success=$(gh run list -R "$REPO" --workflow watch.yml --status success --limit 1 \
+            --json updatedAt --jq '.[0].updatedAt // ""' || true)
+          watch_state=$(gh api "repos/$REPO/actions/workflows/watch.yml" --jq .state || true)
+          echo "last commit to main: ${main_commit:-unknown}"
+          echo "last successful watch run: ${watch_success:-none}"
+          echo "watch workflow state: ${watch_state:-unknown}"
+          {
+            echo "main_commit=$main_commit"
+            echo "watch_success=$watch_success"
+            echo "watch_state=${watch_state:-unknown}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Re-enable scheduled workflows
+        # Undocumented whether this resets the inactivity clock, so nothing
+        # depends on it. It does revive a workflow that was already disabled.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          for wf in watch.yml keepalive.yml; do
+            if gh api -X PUT "repos/$REPO/actions/workflows/$wf/enable" --silent; then
+              echo "enabled $wf"
+            else
+              echo "::warning::could not re-enable $wf"
+            fi
+          done
+
+      - uses: astral-sh/setup-uv@v3
+
+      - name: Install
+        run: uv sync --no-dev
+
+      - name: Health check
+        env:
+          FARELOOT_TELEGRAM_BOT_TOKEN: ${{ secrets.FARELOOT_TELEGRAM_BOT_TOKEN }}
+          FARELOOT_TELEGRAM_CHAT_ID: ${{ secrets.FARELOOT_TELEGRAM_CHAT_ID }}
+        run: >
+          uv run fareloot health
+          --last-main-commit "${{ steps.facts.outputs.main_commit }}"
+          --last-watch-success "${{ steps.facts.outputs.watch_success }}"
+          --watch-state "${{ steps.facts.outputs.watch_state }}"
+          --notify telegram

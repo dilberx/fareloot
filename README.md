@@ -109,6 +109,19 @@ many runs remain. Repeat until it reports that every route has been seeded,
 about 8 runs with the default watchlist. Scheduled runs keep adding history on
 their own either way.
 
+`.github/workflows/keepalive.yml` checks once a day that this keeps working, and
+messages you on Telegram if it won't:
+
+- **From day 45 without a commit to `main`.** GitHub disables scheduled workflows
+  in a public repo after 60 days without activity, and only commits to the
+  default branch appear to count. `main` is protected, so nothing automated can
+  commit there. Merging any PR resets the clock, even a one-line README edit.
+- **When the watcher hasn't succeeded for 36 hours,** for whatever reason.
+- **When the watch workflow is disabled.** The keepalive also re-enables it.
+
+Run it any time with `gh workflow run keepalive.yml`, or locally:
+`uv run fareloot health --last-main-commit 2026-10-01T00:00:00Z`.
+
 Two things about this setup are worth knowing. Scheduled runs are best-effort:
 observed cadence is closer to every 7 or 8 hours than the hourly cron requests,
 because GitHub heavily throttles `schedule` on free public repos. And the repo

@@ -131,6 +131,12 @@ Three things here are easy to break:
   were (`PollResult/SeedResult.all_calls_failed`). Before this a revoked token produced green runs.
 - **Persist runs even when Poll fails**, so a notification error doesn't discard collected prices,
   but only after a successful restore and never with a hot SQLite journal present.
+- **Nothing automated keeps the schedule alive; `keepalive.yml` makes a person do it.** Reports
+  say only default-branch commits count as activity for GitHub's 60-day rule, and `main` is
+  protected, so a bot commit is impossible by design. The keepalive re-enables workflows through
+  the API (undocumented whether that resets the clock, so nothing relies on it) and runs
+  `fareloot health`, which warns on Telegram from day 45. Decision logic lives in `health.py` so
+  it is testable; the workflow only gathers facts, and missing facts are warnings, never healthy.
 - **The repo must stay public.** Branch protection on a private repo needs GitHub Pro; the API
   returns 403 and `main` reverts to unprotected. Scheduled runs are also best-effort and land every
   7-8 hours in practice, not hourly.
