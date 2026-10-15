@@ -342,8 +342,14 @@ def test_same_day_and_overnight_round_trips_are_never_recorded_or_scored(store):
     d = date(2026, 12, 1)
 
     def q(days):
-        return Quote(origin="COK", destination="GYD", depart_date=d,
-                     return_date=d.replace(day=1 + days), price_inr=5000, distance_km=3000)
+        return Quote(
+            origin="COK",
+            destination="GYD",
+            depart_date=d,
+            return_date=d.replace(day=1 + days),
+            price_inr=5000,
+            distance_km=3000,
+        )
 
     one_way = Quote(origin="GYD", destination="COK", depart_date=d, price_inr=4000)
     kept = usable_quotes(wl, [q(0), q(1), q(2), q(3), q(9), one_way])
@@ -355,8 +361,13 @@ def test_baseline_pools_the_whole_trip_band(store):
     wl = _watchlist(["GYD"])
     d = date(2026, 12, 1)
     history = [
-        Quote(origin="COK", destination="GYD", depart_date=d.replace(day=1 + i),
-              return_date=d.replace(day=1 + i + length), price_inr=20_000 + 100 * i)
+        Quote(
+            origin="COK",
+            destination="GYD",
+            depart_date=d.replace(day=1 + i),
+            return_date=d.replace(day=1 + i + length),
+            price_inr=20_000 + 100 * i,
+        )
         for i, length in enumerate([7, 8, 10, 7, 8, 10, 7, 8])
     ]
     store.record(history)
@@ -418,10 +429,38 @@ def test_partial_failure_is_not_reported_as_total(store):
 
 
 def test_error_summary_strips_routes():
-    errors = ["cheap COK->BKK: returned HTTP 503", "reverse GYD->BLR: returned HTTP 503",
-              "latest MAA: call budget of 140 exhausted"]
+    errors = [
+        "cheap COK->BKK: returned HTTP 503",
+        "reverse GYD->BLR: returned HTTP 503",
+        "latest MAA: call budget of 140 exhausted",
+    ]
     summary = summarize_errors(errors)
     assert summary == [("returned HTTP 503", 2), ("call budget of 140 exhausted", 1)]
     text = " ".join(cause for cause, _ in summary)
     for code in ("COK", "BKK", "GYD", "BLR", "MAA"):
         assert code not in text
+
+
+def test_seed_can_target_new_destinations_without_moving_the_main_cursor(store):
+    wl = _multi_origin_watchlist(["GYD", "TBS", "SHJ", "RKT"])
+    today = date(2026, 11, 1)
+    store.set_meta("seed_cursor", "7")
+    p = _SeedRecordingProvider(today=today)
+    r = seed(p, store, wl, today=today, call_budget=1000, only=["shj", "rkt"])
+    # 5 origins x 2 destinations x 2 months, each seeded in both directions.
+    assert r.tasks_total == 20 and r.cycle_completed
+    assert {d for _, d, _ in p.matrices if d not in {"COK", "TRV", "CCJ", "BLR", "MAA"}} == {
+        "SHJ",
+        "RKT",
+    }
+    assert {o for o, _, _ in p.matrices if o not in {"COK", "TRV", "CCJ", "BLR", "MAA"}} == {
+        "SHJ",
+        "RKT",
+    }
+    assert store.get_meta("seed_cursor") == "7"
+
+
+def test_seed_rejects_destinations_outside_the_watchlist(store):
+    wl = _multi_origin_watchlist(["GYD"])
+    with pytest.raises(ValueError, match="SHJ"):
+        seed(MockProvider(), store, wl, only=["SHJ"])
