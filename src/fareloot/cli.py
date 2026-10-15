@@ -82,7 +82,7 @@ def seed(
     end = r.start + r.tasks_done
     typer.echo(
         f"Seeded {r.recorded} observations from {r.calls_made} API calls "
-        f"(tasks {r.start}-{end} of {r.tasks_total})."
+        f"({seed_range_label(r.start, r.tasks_done, r.tasks_total)})."
     )
     if r.cycle_completed:
         typer.echo("Every route has now been seeded at least once.")
@@ -90,6 +90,14 @@ def seed(
         remaining = r.tasks_total - end
         runs = -(-remaining // max(r.tasks_done, 1))
         typer.echo(f"{remaining} tasks left, about {runs} more run(s) at this budget.")
+
+
+def seed_range_label(start: int, done: int, total: int) -> str:
+    """Describe which seed tasks a run covered, splitting the range when it wraps."""
+    end = start + done
+    if end <= total:
+        return f"tasks {start}-{end} of {total}"
+    return f"tasks {start}-{total} and 0-{end - total} of {total}"
 
 
 def _row_to_quote(row) -> Quote:
