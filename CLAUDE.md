@@ -43,6 +43,14 @@ populate that reverse one-way baseline too, not just the forward direction — `
 `fareloot seed` both do this deliberately; forgetting the reverse seed silently disables the
 return-leg gate (it did, once, during development — see the git history around the fix).
 
+### Round trips pool by trip band (`config.Watchlist.trip_bands`)
+
+Real fare data arrives in dozens of trip lengths, including 0-2 day "round trips" nobody takes. A
+round trip is kept only if its length falls inside a configured band (default 3-6, 7-10, 11-21
+days), and its baseline is every observation in that band (`Store.route_history(..., band=...)`),
+not its exact length. `watcher.usable_quotes` drops out-of-band quotes before they are recorded or
+scored. Without it, same-day returns get their own cheap-looking baselines and can alert.
+
 ### Hotness scoring (`scoring.py`)
 
 A weighted blend of five components (depth below baseline, rarity, price-per-km value, absolute

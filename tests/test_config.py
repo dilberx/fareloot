@@ -16,7 +16,7 @@ def test_default_template_is_valid_yaml_and_schema():
     wl = _default()
     assert wl.origins
     assert wl.destinations
-    assert wl.trip_lengths
+    assert wl.trip_bands
 
 
 def test_default_template_origins_are_usable():
@@ -49,3 +49,29 @@ def test_load_watchlist_round_trips_the_template(tmp_path):
 def test_load_watchlist_points_at_init_when_missing(tmp_path):
     with pytest.raises(FileNotFoundError, match="fareloot init"):
         load_watchlist(tmp_path / "nope.yaml")
+
+
+def test_old_watchlist_with_trip_lengths_still_loads(tmp_path):
+    # Deployed watchlists live in a repo secret written before trip_bands existed.
+    old = DEFAULT_WATCHLIST_YAML.replace(
+        "trip_bands: [[3, 6], [7, 10], [11, 21]]", "trip_lengths: [7, 10, 14]"
+    )
+    assert "trip_lengths" in old
+    path = tmp_path / "watchlist.yaml"
+    path.write_text(old, encoding="utf-8")
+    assert load_watchlist(path).trip_bands == [(3, 6), (7, 10), (11, 21)]
+
+
+def test_band_for_rejects_non_trips_and_pools_the_rest():
+    wl = _default()
+    assert wl.band_for(0) is None
+    assert wl.band_for(2) is None
+    assert wl.band_for(30) is None
+    assert wl.band_for(9) == wl.band_for(7) == (7, 10)
+
+
+def test_overlapping_bands_are_rejected():
+    raw = yaml.safe_load(DEFAULT_WATCHLIST_YAML)
+    raw["trip_bands"] = [[3, 8], [7, 10]]
+    with pytest.raises(ValueError, match="overlap"):
+        Watchlist.model_validate(raw)
