@@ -125,6 +125,13 @@ Three things here are easy to break:
   from a cursor in the `meta` table each run. Walking in a fixed order instead starves every origin
   after the first few forever, including BLR and MAA. Discovery spends its calls first for the same
   reason. `test_small_budget_still_reaches_every_origin_across_runs` pins this.
+- **Months 3+ rotate on their own cursor** (`FAR_CURSOR_KEY`) with `far_month_share` of the
+  per-run budget; months 1-2 keep `_wishlist_slice`. Each far item fetches its own reverse month.
+  Defaults: ~3.6 days per near pass, ~20 days per far month. Raising the horizon or the share
+  stretches one or the other; there is no free lunch under the 150/hour limiter.
+- **Baselines exclude the current run** (`route_history(..., before=run_started)`). `poll` records
+  before scoring, and a route crashing on every date at once would otherwise dilute its own
+  baseline; `test_run_does_not_count_its_own_prices_as_baseline` pins it.
 - **Seeding is a `mode` input on watch.yml, not its own workflow.** It must share the
   `fareloot-watch` concurrency group and the restore/persist guards; a second workflow
   force-pushing `fareloot-data` concurrently would drop one run's data. `watcher.seed` rotates

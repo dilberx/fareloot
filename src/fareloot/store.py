@@ -134,25 +134,30 @@ class Store:
         *,
         band: tuple[int, int] | None = None,
         days: int = HISTORY_DAYS,
+        before: datetime | None = None,
     ) -> list[float]:
         """Prices seen on this route shape, for the baseline.
 
         With `band`, every round trip whose length falls inside it counts, so a
         9-day quote is judged against 7-10 day history, not 9-day history alone.
+        With `before`, only earlier observations count, so a run's own prices
+        aren't part of the baseline they're judged against.
         """
         since = (_now() - timedelta(days=days)).isoformat()
+        until = (before or datetime.max.replace(tzinfo=UTC)).isoformat()
         if band is not None:
             rows = self.conn.execute(
                 """SELECT price_inr FROM observations
                    WHERE origin=? AND destination=? AND trip_length BETWEEN ? AND ?
-                     AND observed_at >= ?""",
-                (origin, destination, band[0], band[1], since),
+                     AND observed_at >= ? AND observed_at < ?""",
+                (origin, destination, band[0], band[1], since, until),
             ).fetchall()
             return [float(r["price_inr"]) for r in rows]
         rows = self.conn.execute(
             """SELECT price_inr FROM observations
-               WHERE origin=? AND destination=? AND trip_length IS ? AND observed_at >= ?""",
-            (origin, destination, trip_length, since),
+               WHERE origin=? AND destination=? AND trip_length IS ?
+                 AND observed_at >= ? AND observed_at < ?""",
+            (origin, destination, trip_length, since, until),
         ).fetchall()
         return [float(r["price_inr"]) for r in rows]
 
