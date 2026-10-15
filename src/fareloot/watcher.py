@@ -173,6 +173,72 @@ def score_quotes(
     return deals
 
 
+SEED_CURSOR_KEY = "seed_cursor"
+CALLS_PER_SEED_TASK = 2  # month matrix in both directions
+
+
+@dataclass
+class SeedResult:
+    recorded: int
+    calls_made: int
+    tasks_done: int
+    tasks_total: int
+    start: int
+    cycle_completed: bool
+    errors: list[str]
+
+
+def seed(
+    provider: Provider,
+    store: Store,
+    wl: Watchlist,
+    *,
+    today: date | None = None,
+    call_budget: int | None = None,
+) -> SeedResult:
+    """Bootstrap baselines from month-matrix calendars, a rotating slice per run.
+
+    Seeds both directions: origin->destination for the route baseline, and
+    destination->origin so the return-leg gate has a reverse one-way baseline to
+    judge a live reverse quote against. The full task list costs far more than
+    one run's budget, so it resumes from its own cursor like poll does.
+    """
+    today = today or date.today()
+    origins = wl.origin_map()
+    months = _depart_candidates(today, 2)
+    destinations = list(dict.fromkeys(wl.destinations))
+    tasks = [(o, d, m) for o in origins for d in destinations if d != o for m in months]
+    if not tasks:
+        return SeedResult(0, 0, 0, 0, 0, False, [])
+
+    if call_budget is None:
+        count = len(tasks)
+    else:
+        count = max(0, min(len(tasks), call_budget // CALLS_PER_SEED_TASK))
+    start = int(store.get_meta(SEED_CURSOR_KEY, "0") or 0) % len(tasks)
+
+    recorded = 0
+    errors: list[str] = []
+    for i in range(count):
+        origin_iata, destination, month = tasks[(start + i) % len(tasks)]
+        for a, b in ((origin_iata, destination), (destination, origin_iata)):
+            try:
+                recorded += store.record(provider.month_matrix(a, b, month))
+            except Exception as exc:
+                errors.append(f"month_matrix {a}->{b} {month}: {exc}")
+    store.set_meta(SEED_CURSOR_KEY, str((start + count) % len(tasks)))
+
+    return SeedResult(
+        recorded=recorded,
+        calls_made=getattr(provider, "calls_made", 0),
+        tasks_done=count,
+        tasks_total=len(tasks),
+        start=start,
+        cycle_completed=start + count >= len(tasks),
+        errors=errors,
+    )
+
+
 def poll(
     provider: Provider,
     store: Store,

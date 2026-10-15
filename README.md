@@ -71,6 +71,18 @@ deployed watcher, paste the edited file into that secret.
 Price history is kept on a separate `fareloot-data` branch, not in `main`'s
 commit history, so the repo doesn't grow forever.
 
+A route sends no alerts until it has price history. To build it quickly, run the
+workflow manually with mode **seed** (Actions -> watch -> Run workflow), or:
+
+```bash
+gh workflow run watch.yml -f mode=seed
+```
+
+Each seed run covers the next slice of routes within the API budget and logs how
+many runs remain. Repeat until it reports that every route has been seeded,
+about 8 runs with the default watchlist. Scheduled runs keep adding history on
+their own either way.
+
 Two things about this setup are worth knowing. Scheduled runs are best-effort:
 observed cadence is closer to every 7 or 8 hours than the hourly cron requests,
 because GitHub heavily throttles `schedule` on free public repos. And the repo

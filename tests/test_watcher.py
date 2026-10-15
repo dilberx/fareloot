@@ -11,6 +11,7 @@ from fareloot.watcher import (
     format_alert_lines,
     poll,
     ranked_total,
+    seed,
 )
 
 
@@ -284,3 +285,48 @@ def test_budget_caps_calls(store):
     p = _RecordingProvider(today=today)
     poll(p, store, wl, today=today, include_discovery=True, call_budget=40)
     assert p.calls_made <= 40
+
+
+class _SeedRecordingProvider(MockProvider):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.matrices: set[tuple[str, str, str]] = set()
+
+    def month_matrix(self, origin, destination, month):
+        self.matrices.add((origin, destination, month))
+        return super().month_matrix(origin, destination, month)
+
+
+def test_seed_rotates_until_every_route_is_seeded_both_ways(store):
+    wl = _multi_origin_watchlist(["GYD", "TBS"])  # 5 origins x 2 dests x 2 months = 20 tasks
+    today = date(2026, 11, 1)
+    seen: set[tuple[str, str, str]] = set()
+    results = []
+    for _ in range(4):  # 6 calls -> 3 tasks per run; 4 runs is not enough...
+        p = _SeedRecordingProvider(today=today)
+        results.append(seed(p, store, wl, today=today, call_budget=6))
+        seen |= p.matrices
+    assert not any(r.cycle_completed for r in results)
+    for _ in range(3):  # ...7 runs is
+        p = _SeedRecordingProvider(today=today)
+        results.append(seed(p, store, wl, today=today, call_budget=6))
+        seen |= p.matrices
+    assert results[-1].cycle_completed
+    forward = {(o, d) for o, d, _ in seen if o in {"COK", "TRV", "CCJ", "BLR", "MAA"}}
+    reverse = {(d, o) for o, d, _ in seen if d in {"COK", "TRV", "CCJ", "BLR", "MAA"}}
+    assert {o for o, _ in forward} == {"COK", "TRV", "CCJ", "BLR", "MAA"}
+    # The return-leg gate needs the reverse one-way baseline for every route.
+    assert forward == reverse
+
+
+def test_seed_respects_budget_and_unbounded_seeds_everything(store):
+    wl = _multi_origin_watchlist(["GYD", "TBS"])
+    today = date(2026, 11, 1)
+    p = _SeedRecordingProvider(today=today)
+    r = seed(p, store, wl, today=today, call_budget=10)
+    assert p.calls_made <= 10
+    assert r.tasks_done == 5
+
+    p2 = _SeedRecordingProvider(today=today)
+    r2 = seed(p2, store, wl, today=today)
+    assert r2.tasks_done == r2.tasks_total == 20

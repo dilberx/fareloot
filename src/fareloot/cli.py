@@ -17,6 +17,7 @@ from .providers.mock import MockProvider
 from .providers.travelpayouts import TravelpayoutsProvider
 from .store import Store
 from .watcher import poll, score_quotes
+from .watcher import seed as seed_routes
 
 app = typer.Typer(add_completion=False, help="Catch abnormally cheap round trips from Kerala.")
 
@@ -58,32 +59,37 @@ def init(force: bool = typer.Option(False, help="Overwrite an existing watchlist
 @app.command()
 def seed(
     provider: str = typer.Option("travelpayouts", help="'travelpayouts' or 'mock'"),
-    max_calls: int = typer.Option(300, help="Safety cap on API calls this run"),
+    max_calls: int = typer.Option(
+        140,
+        help="API calls this run, kept under the provider's 150/hour limiter. Each run "
+        "resumes where the last one stopped; run it again until it reports a full cycle.",
+    ),
 ) -> None:
-    """Bootstrap baselines with a month's worth of prices per route, instantly.
-
-    Seeds both directions: origin->destination for the main route baseline, and
-    destination->origin so the return-leg health check has something to judge
-    a live reverse quote against from the very first poll.
-    """
+    """Bootstrap baselines from month-matrix calendars, in both directions."""
     wl = load_watchlist()
     settings = Settings()
     p = _make_provider(provider, settings, max_calls=max_calls)
     with Store(DEFAULT_DB_PATH) as store:
-        total = 0
-        origins = wl.origin_map()
-        months = _first_two_months()
-        for origin in origins.values():
-            for destination in wl.destinations:
-                for month in months:
-                    for a, b in ((origin.iata, destination), (destination, origin.iata)):
-                        try:
-                            quotes = p.month_matrix(a, b, month)
-                        except Exception as exc:
-                            typer.echo(f"  skip {a}->{b} {month}: {exc}")
-                            continue
-                        total += store.record(quotes)
-        typer.echo(f"Seeded {total} observations across {len(origins)} origins.")
+        # The mock costs nothing, so seed it all at once for local demos.
+        budget = None if provider == "mock" else int(max_calls * 0.9)
+        r = seed_routes(p, store, wl, call_budget=budget)
+
+    for err in r.errors[:5]:
+        typer.secho(f"warning: {err}", fg=typer.colors.YELLOW)
+    if len(r.errors) > 5:
+        typer.secho(f"warning: ...and {len(r.errors) - 5} more", fg=typer.colors.YELLOW)
+
+    end = r.start + r.tasks_done
+    typer.echo(
+        f"Seeded {r.recorded} observations from {r.calls_made} API calls "
+        f"(tasks {r.start}-{end} of {r.tasks_total})."
+    )
+    if r.cycle_completed:
+        typer.echo("Every route has now been seeded at least once.")
+    else:
+        remaining = r.tasks_total - end
+        runs = -(-remaining // max(r.tasks_done, 1))
+        typer.echo(f"{remaining} tasks left, about {runs} more run(s) at this budget.")
 
 
 def _row_to_quote(row) -> Quote:
@@ -99,18 +105,6 @@ def _row_to_quote(row) -> Quote:
         airline=row["airline"],
         distance_km=row["distance_km"],
     )
-
-
-def _first_two_months() -> list[str]:
-    from datetime import date
-
-    today = date.today().replace(day=1)
-    months = [today.strftime("%Y-%m")]
-    year, month = today.year, today.month + 1
-    if month > 12:
-        month, year = 1, year + 1
-    months.append(date(year, month, 1).strftime("%Y-%m"))
-    return months
 
 
 @app.command()
