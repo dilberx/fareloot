@@ -156,6 +156,34 @@ class Store:
         ).fetchall()
         return [float(r["price_inr"]) for r in rows]
 
+    def route_low(
+        self,
+        origin: str,
+        destination: str,
+        band: tuple[int, int],
+        *,
+        days: int,
+        before: datetime,
+    ) -> tuple[float | None, int, float]:
+        """Lowest price, observation count, and span in days for a route band.
+
+        Covers [before - days, before), so prices recorded in the current run
+        can't count as their own previous low.
+        """
+        since = (before - timedelta(days=days)).isoformat()
+        row = self.conn.execute(
+            """SELECT MIN(price_inr) AS low, COUNT(*) AS n,
+                      MIN(observed_at) AS first, MAX(observed_at) AS last
+               FROM observations
+               WHERE origin=? AND destination=? AND trip_length BETWEEN ? AND ?
+                 AND observed_at >= ? AND observed_at < ?""",
+            (origin, destination, band[0], band[1], since, before.isoformat()),
+        ).fetchone()
+        if not row["n"]:
+            return None, 0, 0.0
+        span = datetime.fromisoformat(row["last"]) - datetime.fromisoformat(row["first"])
+        return float(row["low"]), int(row["n"]), span.total_seconds() / 86_400
+
     def global_inr_per_km(self, *, days: int = HISTORY_DAYS, limit: int = 5_000) -> list[float]:
         """Cross-route price-per-km sample, used to judge routes with no history."""
         since = (_now() - timedelta(days=days)).isoformat()

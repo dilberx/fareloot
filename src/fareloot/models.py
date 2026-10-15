@@ -95,6 +95,9 @@ class Deal:
     pct_below: float
     one_way_only: bool
     reasons: list[str]
+    # Qualified by a lowest-fare rule: the route is at its cheapest in the rule's
+    # window. Cooled down per route, not per departure date.
+    lowest_in_window: bool = False
 
     @property
     def total_inr(self) -> int:

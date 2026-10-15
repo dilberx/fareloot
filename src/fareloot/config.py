@@ -68,6 +68,23 @@ class AlertSettings(BaseModel):
     tiers: TierThresholds = Field(default_factory=TierThresholds)
 
 
+class LowestFareRule(BaseModel):
+    """Alert on destinations you fly often when a round trip is simply the
+    cheapest seen recently, without waiting for a statistical crash.
+
+    The return leg must still be checked and healthy, as for every alert.
+    """
+
+    destinations: list[str]
+    window_days: int = 30
+    min_saving_inr: int = 1_500
+    min_pct_below_baseline: float = 10.0
+    # A "lowest in 30 days" claim is meaningless on a route with two days of
+    # history, so the rule stays dormant until the window holds enough prices.
+    min_history: int = 20
+    min_history_days: int = 7
+
+
 class Watchlist(BaseModel):
     origins: list[OriginModel]
     destinations: list[str] = Field(default_factory=list)
@@ -78,6 +95,25 @@ class Watchlist(BaseModel):
     )
     search_horizon_months: int = 6
     alerts: AlertSettings = Field(default_factory=AlertSettings)
+    lowest_fare_rules: list[LowestFareRule] = Field(default_factory=list)
+
+    @field_validator("lowest_fare_rules")
+    @classmethod
+    def _one_rule_per_destination(cls, rules: list[LowestFareRule]) -> list[LowestFareRule]:
+        seen: set[str] = set()
+        for rule in rules:
+            rule.destinations = [d.upper() for d in rule.destinations]
+            dupes = seen.intersection(rule.destinations)
+            if dupes:
+                raise ValueError(f"destination in more than one lowest_fare_rule: {sorted(dupes)}")
+            seen.update(rule.destinations)
+        return rules
+
+    def lowest_rule_for(self, destination: str) -> LowestFareRule | None:
+        for rule in self.lowest_fare_rules:
+            if destination.upper() in rule.destinations:
+                return rule
+        return None
 
     @field_validator("trip_bands")
     @classmethod
@@ -200,6 +236,15 @@ train_hour_value_inr: 80
 # deep and dropping the rest keeps cheap non-trips from alerting.
 trip_bands: [[3, 6], [7, 10], [11, 21]]
 search_horizon_months: 6
+
+# Destinations you fly often can also alert when a round trip is simply the
+# cheapest seen recently, not only on a big drop. The return leg must still be
+# healthy, and a route needs a week of history before "lowest" counts.
+# lowest_fare_rules:
+#   - destinations: [AAA, BBB]
+#     window_days: 30
+#     min_saving_inr: 1500
+#     min_pct_below_baseline: 10
 
 alerts:
   min_saving_inr: 3000
