@@ -49,6 +49,17 @@ scoring and tiers work before signing up for anything.
 3. Add both to `.env` as `FARELOOT_TELEGRAM_BOT_TOKEN` and `FARELOOT_TELEGRAM_CHAT_ID`.
 4. `uv run fareloot test-alert` - confirm it reaches your phone.
 
+### Routes you fly often
+
+Normally a route alerts only on a big drop: 25% and Rs 3,000 below its usual
+price. For destinations you fly regularly, a `lowest_fare_rules` entry in your
+watchlist also alerts when a round trip is the cheapest seen in the last N days,
+with looser minimums. See the commented example in the template written by
+`fareloot init`. The return leg still has to be checked and healthy, so those
+destinations must be in `destinations:`. Each route needs 20 prices across at
+least 7 days before it can fire, and it alerts at most once per route per run,
+then again only on a 10% further drop or after the 48-hour cooldown.
+
 ## Running it continuously
 
 `.github/workflows/watch.yml` runs `fareloot poll` on GitHub Actions for free.

@@ -6,10 +6,10 @@ This is wiring, not logic: the judgement calls live in scoring.py and baseline.p
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 
 from .baseline import robust_z
-from .config import Watchlist
+from .config import LowestFareRule, Watchlist
 from .journey import ranking_cost_inr
 from .links import aviasales, google_flights
 from .models import Deal, Origin, Quote, Tier
@@ -151,6 +151,58 @@ def _score_quote(
     )
 
 
+LOWEST_KEY = "lowest"  # alerts-table depart_date for route-level lowest-fare alerts
+
+
+def _apply_lowest_rule(
+    store: Store,
+    wl: Watchlist,
+    deal: Deal,
+    scored: Scored,
+    rule: LowestFareRule,
+    as_of: datetime,
+) -> None:
+    """Promote a deal to STEAL if it is the cheapest the route has been lately.
+
+    Only a round trip whose return leg was checked and found healthy qualifies;
+    the rule loosens how deep a drop must be, never what counts as a real trip.
+    """
+    q = deal.quote
+    band = wl.band_for(q.trip_length) if q.trip_length is not None else None
+    if band is None or scored.gates.get("return_health") != 1.0:
+        return
+    if scored.gates.get("staleness", 1.0) == 0.0:
+        return
+    if scored.saving_inr < rule.min_saving_inr or scored.pct_below < rule.min_pct_below_baseline:
+        return
+    low, n, span_days = store.route_low(
+        q.origin, q.destination, band, days=rule.window_days, before=as_of
+    )
+    if low is None or n < rule.min_history or span_days < rule.min_history_days:
+        return
+    if q.price_inr >= low:
+        return
+    deal.lowest_in_window = True
+    if deal.tier.rank < Tier.STEAL.rank:
+        deal.tier = Tier.STEAL
+    deal.reasons.insert(
+        0,
+        f"cheapest {q.origin}->{q.destination} round trip in {rule.window_days} days "
+        f"(previous low Rs {int(low):,})",
+    )
+
+
+def alert_key(deal: Deal) -> tuple[int | None, str]:
+    """(trip_length, depart_date) used to cool alerts down.
+
+    Lowest-fare alerts are about the route, not one departure date; keying them
+    per date would let every date that dips below the old low alert separately.
+    """
+    if deal.lowest_in_window:
+        return None, LOWEST_KEY
+    return deal.quote.trip_length, deal.quote.depart_date.isoformat()
+
+
 def score_quotes(
     store: Store,
     wl: Watchlist,
@@ -160,6 +212,7 @@ def score_quotes(
     *,
     marker: str = "",
     promote_discoveries: bool = True,
+    as_of: datetime | None = None,
 ) -> list[Deal]:
     """Score a batch of quotes into ranked Deals.
 
@@ -174,7 +227,11 @@ def score_quotes(
         if origin is None:
             continue
         scored = _score_quote(store, wl, origin, quote, reverse_quotes)
-        deals.append(_to_deal(quote, origin, scored, marker=marker))
+        deal = _to_deal(quote, origin, scored, marker=marker)
+        rule = wl.lowest_rule_for(quote.destination)
+        if rule is not None and as_of is not None:
+            _apply_lowest_rule(store, wl, deal, scored, rule, as_of)
+        deals.append(deal)
         if (
             promote_discoveries
             and scored.tier != Tier.NONE
@@ -276,6 +333,7 @@ def poll(
     call_budget: int | None = None,
 ) -> PollResult:
     today = today or date.today()
+    run_started = datetime.now(UTC)
     origins = wl.origin_map()
     months = _depart_candidates(today, wl.search_horizon_months)
     all_quotes: list[Quote] = []
@@ -323,24 +381,35 @@ def poll(
 
     all_quotes = usable_quotes(wl, all_quotes)
     recorded = store.record(all_quotes)
-    deals = score_quotes(store, wl, all_quotes, origins, reverse_quotes, marker=marker)
+    deals = score_quotes(
+        store, wl, all_quotes, origins, reverse_quotes, marker=marker, as_of=run_started
+    )
 
     to_alert = []
     a = wl.alerts
-    for deal in deals:
+    lowest_routes: set[tuple[str, str]] = set()
+    # Cheapest first, so if several departure dates of one route are all a new
+    # low this run, the one alert sent is the cheapest of them.
+    for deal in sorted(deals, key=lambda d: (-d.tier.rank, d.quote.price_inr)):
         if not deal.tier.pushes:
             continue
+        route = (deal.quote.origin, deal.quote.destination)
+        if deal.lowest_in_window and route in lowest_routes:
+            continue
+        trip_key, date_key = alert_key(deal)
         if store.should_alert(
             deal.quote.origin,
             deal.quote.destination,
-            deal.quote.trip_length,
-            deal.quote.depart_date.isoformat(),
+            trip_key,
+            date_key,
             deal.quote.price_inr,
             deal.tier,
             cooldown_hours=a.cooldown_hours,
             redrop_pct=a.redrop_pct,
         ):
             to_alert.append(deal)
+            if deal.lowest_in_window:
+                lowest_routes.add(route)
 
     calls_made = getattr(provider, "calls_made", 0)
     return PollResult(
@@ -361,11 +430,12 @@ def record_alerts(store: Store, deals: list[Deal]) -> None:
     cooldown then hid the real deal for 48 hours.
     """
     for deal in deals:
+        trip_key, date_key = alert_key(deal)
         store.record_alert(
             deal.quote.origin,
             deal.quote.destination,
-            deal.quote.trip_length,
-            deal.quote.depart_date.isoformat(),
+            trip_key,
+            date_key,
             deal.quote.price_inr,
             deal.tier,
         )

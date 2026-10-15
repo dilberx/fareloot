@@ -51,6 +51,18 @@ days), and its baseline is every observation in that band (`Store.route_history(
 not its exact length. `watcher.usable_quotes` drops out-of-band quotes before they are recorded or
 scored. Without it, same-day returns get their own cheap-looking baselines and can alert.
 
+### Lowest-fare rules are a second way in, not a change to scoring
+
+`Watchlist.lowest_fare_rules` lets chosen destinations alert when a round trip is the cheapest in
+a window (default 30 days), with looser floors. It lives in `watcher._apply_lowest_rule`, after
+`scoring.score()`, and only ever promotes a deal to STEAL; it never demotes or touches the gates.
+It requires a *verified* healthy return (`gates["return_health"] == 1.0`, so discovery quotes with
+no reverse fetch can't qualify), at least `min_history` prices spanning `min_history_days`, and a
+price strictly below `Store.route_low(..., before=run_started)`, which excludes the current run's
+own rows. Its cooldown is per route (`alert_key` returns `LOWEST_KEY`), and `poll` keeps only the
+cheapest qualifying deal per route per run; keyed per date, every date dipping under the old low
+would alert separately. Each of these is pinned by a test in `tests/test_lowest_fare.py`.
+
 ### Hotness scoring (`scoring.py`)
 
 A weighted blend of five components (depth below baseline, rarity, price-per-km value, absolute
