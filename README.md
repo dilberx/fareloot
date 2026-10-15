@@ -145,6 +145,10 @@ messages you on Telegram if it won't:
 Run it any time with `gh workflow run keepalive.yml`, or locally:
 `uv run fareloot health --last-main-commit 2026-10-01T00:00:00Z`.
 
+Each run checks the next two months of departures on a 3-4 day cycle, and months
+3 to `search_horizon_months` on a slower one, about every 20 days with the
+defaults. `far_month_share` in the watchlist sets how the budget splits.
+
 Two things about this setup are worth knowing. Scheduled runs are best-effort:
 observed cadence is closer to every 7 or 8 hours than the hourly cron requests,
 because GitHub heavily throttles `schedule` on free public repos. And the repo

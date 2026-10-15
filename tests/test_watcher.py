@@ -29,6 +29,9 @@ def _watchlist(destinations: list[str] | None = None) -> Watchlist:
         destinations=destinations or ["GYD", "TBS"],
         max_reach_hours=14,
         train_hour_value_inr=80,
+        # MockProvider seeds two months of history; pricing six would let a run's
+        # crashed prices dilute the baseline the next run judges them against.
+        search_horizon_months=2,
     )
 
 
@@ -226,6 +229,8 @@ def _multi_origin_watchlist(destinations: list[str]) -> Watchlist:
         destinations=destinations,
         max_reach_hours=14,
         train_hour_value_inr=80,
+        # These tests pin the near-month rotation; far months get their own tests.
+        far_month_share=0.0,
     )
 
 
@@ -386,9 +391,12 @@ def test_undelivered_alerts_are_not_suppressed_next_run(store):
 
     first = poll(provider, store, wl, today=today)
     assert first.to_alert
-    # ...and the send fails, so nothing is recorded.
+    # ...and the send fails, so nothing is recorded. Every deal that still
+    # qualifies next run must alert again; none may be held back by a cooldown.
     second = poll(provider, store, wl, today=today)
-    assert len(second.to_alert) == len(first.to_alert)
+    still_qualifying = [d for d in second.deals if d.tier.pushes]
+    assert still_qualifying
+    assert len(second.to_alert) == len(still_qualifying)
 
 
 class _DeadTokenProvider(MockProvider):
@@ -464,3 +472,76 @@ def test_seed_rejects_destinations_outside_the_watchlist(store):
     wl = _multi_origin_watchlist(["GYD"])
     with pytest.raises(ValueError, match="SHJ"):
         seed(MockProvider(), store, wl, only=["SHJ"])
+
+
+class _MonthRecordingProvider(MockProvider):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.round_trips: set[tuple[str, str, str]] = set()
+        self.reverses: set[tuple[str, str, str]] = set()
+
+    def cheap(self, origin, destination, depart, return_=None):
+        (self.round_trips if return_ else self.reverses).add((origin, destination, depart[:7]))
+        return super().cheap(origin, destination, depart, return_)
+
+
+def _far_watchlist(share: float) -> Watchlist:
+    wl = _multi_origin_watchlist(["GYD", "TBS"])
+    wl.far_month_share = share
+    return wl
+
+
+def test_far_months_are_all_priced_across_runs_with_their_own_reverse_leg(store):
+    wl = _far_watchlist(0.5)  # 10 pairs x 4 far months = 40 far items
+    today = date(2026, 11, 1)
+    far = {"2027-01", "2027-02", "2027-03", "2027-04"}
+    rt: set[tuple[str, str, str]] = set()
+    rev: set[tuple[str, str, str]] = set()
+    for _ in range(10):
+        p = _MonthRecordingProvider(today=today)
+        poll(p, store, wl, today=today, include_discovery=False, call_budget=20)
+        rt |= p.round_trips
+        rev |= p.reverses
+    far_rt = {x for x in rt if x[2] in far}
+    assert len(far_rt) == 40
+    # Each far month's return leg is judged against a reverse fetch in that month.
+    assert {(d, o, m) for o, d, m in far_rt} <= rev
+    # The near months keep being priced too.
+    assert {m for _, _, m in rt} >= {"2026-11", "2026-12"}
+
+
+def test_far_share_zero_never_prices_far_months(store):
+    p = _MonthRecordingProvider(today=date(2026, 11, 1))
+    poll(
+        p,
+        store,
+        _far_watchlist(0.0),
+        today=date(2026, 11, 1),
+        include_discovery=False,
+        call_budget=60,
+    )
+    assert {m for _, _, m in p.round_trips} <= {"2026-11", "2026-12"}
+
+
+def test_far_months_respect_the_budget(store):
+    p = _MonthRecordingProvider(today=date(2026, 11, 1))
+    poll(
+        p,
+        store,
+        _far_watchlist(0.5),
+        today=date(2026, 11, 1),
+        include_discovery=True,
+        call_budget=40,
+    )
+    assert p.calls_made <= 40
+
+
+def test_run_does_not_count_its_own_prices_as_baseline(store):
+    # A route crashing on every date at once must still read as a crash.
+    wl = _multi_origin_watchlist(["GYD"])
+    wl.far_month_share = 0.5
+    today = date(2026, 11, 1)
+    provider = MockProvider(today=today)
+    _seed_route(store, provider, "COK", "GYD", ["2026-11", "2026-12"])
+    result = poll(provider, store, wl, today=today, include_discovery=False)
+    assert any(d.quote.destination == "GYD" and d.tier.pushes for d in result.deals)

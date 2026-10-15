@@ -19,6 +19,9 @@ from .store import Store
 
 DISCOVERY_PROMOTE_TIER = Tier.DEAL
 CURSOR_KEY = "wishlist_cursor"
+FAR_CURSOR_KEY = "far_month_cursor"
+NEAR_MONTHS = 2
+CALLS_PER_FAR_ITEM = 2  # one round-trip month plus its reverse one-way
 CALLS_PER_PAIR = 3  # two round-trip months plus one reverse one-way
 
 
@@ -105,7 +108,10 @@ def _to_deal(
 
 
 def _return_leg_z(
-    store: Store, quote: Quote, reverse_quotes: dict[tuple[str, str], list[Quote]]
+    store: Store,
+    quote: Quote,
+    reverse_quotes: dict[tuple[str, str], list[Quote]],
+    as_of: datetime | None = None,
 ) -> float | None:
     """How the return leg's own one-way market compares to its own history.
 
@@ -122,7 +128,7 @@ def _return_leg_z(
     if not candidates:
         return None
     closest = min(candidates, key=lambda q: abs((q.depart_date - quote.return_date).days))
-    history = store.route_history(quote.destination, quote.origin, None)
+    history = store.route_history(quote.destination, quote.origin, None, before=as_of)
     return robust_z(closest.price_inr, history)
 
 
@@ -132,10 +138,13 @@ def _score_quote(
     origin: Origin,
     quote: Quote,
     reverse_quotes: dict[tuple[str, str], list[Quote]],
+    as_of: datetime | None = None,
 ) -> Scored:
     band = wl.band_for(quote.trip_length) if quote.trip_length is not None else None
-    history = store.route_history(quote.origin, quote.destination, quote.trip_length, band=band)
-    return_z = _return_leg_z(store, quote, reverse_quotes)
+    history = store.route_history(
+        quote.origin, quote.destination, quote.trip_length, band=band, before=as_of
+    )
+    return_z = _return_leg_z(store, quote, reverse_quotes, as_of)
     global_km = store.global_inr_per_km() if not history else []
     return score(
         price_inr=quote.price_inr,
@@ -226,7 +235,7 @@ def score_quotes(
         origin = origins.get(quote.origin)
         if origin is None:
             continue
-        scored = _score_quote(store, wl, origin, quote, reverse_quotes)
+        scored = _score_quote(store, wl, origin, quote, reverse_quotes, as_of)
         deal = _to_deal(quote, origin, scored, marker=marker)
         rule = wl.lowest_rule_for(quote.destination)
         if rule is not None and as_of is not None:
@@ -376,10 +385,16 @@ def poll(
                 f"latest {iata}", provider.latest, iata, one_way=False, trip_duration=10
             )
 
-    pairs, start, count = _wishlist_slice(store, wl, origins, call_budget, calls)
+    far_months = months[NEAR_MONTHS:]
+    far_budget = None
+    if call_budget is not None:
+        far_budget = int(max(0, call_budget - calls) * wl.far_month_share) if far_months else 0
+    near_budget = None if call_budget is None else call_budget - far_budget
+
+    pairs, start, count = _wishlist_slice(store, wl, origins, near_budget, calls)
     for i in range(count):
         o, d = pairs[(start + i) % len(pairs)]
-        for month in months[:2]:
+        for month in months[:NEAR_MONTHS]:
             all_quotes += attempt(f"cheap {o}->{d}", provider.cheap, o, d, month, month)
         # One-way in the *return* direction, to judge whether the way back is a
         # healthy price or a trap - see _return_leg_z.
@@ -389,6 +404,27 @@ def poll(
     # Same rule as seed: if nothing succeeded, those pairs were never priced.
     if pairs and (ok > 0 or not errors):
         store.set_meta(CURSOR_KEY, str((start + count) % len(pairs)))
+
+    # Months beyond the near ones, often where booking-ahead fares sit, rotate
+    # on their own cursor with a fixed share of the budget, so they can't starve
+    # the near months and the near months can't starve them. Each month gets
+    # its own reverse fetch, so its return leg is judged in the same month.
+    far_items = [(o, d, m) for o, d in pairs for m in far_months]
+    if far_items:
+        if far_budget is None:
+            far_count = len(far_items)
+        else:
+            far_count = min(len(far_items), far_budget // CALLS_PER_FAR_ITEM)
+        far_start = int(store.get_meta(FAR_CURSOR_KEY, "0") or 0) % len(far_items)
+        ok_before, errors_before = ok, len(errors)
+        for i in range(far_count):
+            o, d, month = far_items[(far_start + i) % len(far_items)]
+            all_quotes += attempt(f"cheap {o}->{d}", provider.cheap, o, d, month, month)
+            reverse = attempt(f"reverse {d}->{o}", provider.cheap, d, o, month)
+            reverse_quotes.setdefault((o, d), []).extend(reverse)
+            all_quotes += reverse
+        if far_count and (ok > ok_before or len(errors) == errors_before):
+            store.set_meta(FAR_CURSOR_KEY, str((far_start + far_count) % len(far_items)))
 
     all_quotes = usable_quotes(wl, all_quotes)
     recorded = store.record(all_quotes)

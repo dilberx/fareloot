@@ -97,6 +97,9 @@ class Watchlist(BaseModel):
         default_factory=lambda: [(3, 6), (7, 10), (11, 21)]
     )
     search_horizon_months: int = 6
+    # Share of each run's wishlist budget spent on months 3 and later. The rest
+    # goes to the next two months, which are checked most often.
+    far_month_share: float = Field(default=0.33, ge=0.0, le=0.9)
     alerts: AlertSettings = Field(default_factory=AlertSettings)
     lowest_fare_rules: list[LowestFareRule] = Field(default_factory=list)
 
@@ -239,6 +242,9 @@ train_hour_value_inr: 80
 # deep and dropping the rest keeps cheap non-trips from alerting.
 trip_bands: [[3, 6], [7, 10], [11, 21]]
 search_horizon_months: 6
+# Share of each run's budget for months 3 onward; the next two months get the
+# rest and are rechecked most often. 0 checks only the next two months.
+far_month_share: 0.33
 
 # Destinations you fly often can also alert when a round trip is simply the
 # cheapest seen recently, not only on a big drop. The return leg must still be
