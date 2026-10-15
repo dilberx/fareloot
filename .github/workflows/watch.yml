@@ -3,7 +3,17 @@ name: watch
 on:
   schedule:
     - cron: "7 * * * *" # hourly, offset from the hour to dodge GitHub's traffic spike
-  workflow_dispatch: {}
+  # Seeding is a mode of this workflow, not a separate one: both write the same
+  # price history, so they must share this concurrency group (two runs
+  # force-pushing fareloot-data at once would drop one run's data) and the same
+  # restore/persist steps, which guard against overwriting history.
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "poll = normal run; seed = bootstrap baselines (run until it reports a full cycle)"
+        type: choice
+        options: [poll, seed]
+        default: poll
 
 permissions:
   contents: write
@@ -72,7 +82,15 @@ jobs:
             echo "NOTE: no FARELOOT_WATCHLIST_YAML secret set - polling built-in defaults"
           fi
 
+      - name: Seed
+        if: ${{ inputs.mode == 'seed' }}
+        env:
+          FARELOOT_TP_TOKEN: ${{ secrets.FARELOOT_TP_TOKEN }}
+        run: uv run fareloot seed
+
       - name: Poll
+        # Scheduled runs have no inputs, so an empty mode means poll.
+        if: ${{ inputs.mode != 'seed' }}
         env:
           FARELOOT_TP_TOKEN: ${{ secrets.FARELOOT_TP_TOKEN }}
           FARELOOT_TELEGRAM_BOT_TOKEN: ${{ secrets.FARELOOT_TELEGRAM_BOT_TOKEN }}

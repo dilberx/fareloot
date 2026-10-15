@@ -105,6 +105,10 @@ Three things here are easy to break:
   from a cursor in the `meta` table each run. Walking in a fixed order instead starves every origin
   after the first few forever, including BLR and MAA. Discovery spends its calls first for the same
   reason. `test_small_budget_still_reaches_every_origin_across_runs` pins this.
+- **Seeding is a `mode` input on watch.yml, not its own workflow.** It must share the
+  `fareloot-watch` concurrency group and the restore/persist guards; a second workflow
+  force-pushing `fareloot-data` concurrently would drop one run's data. `watcher.seed` rotates
+  with its own `seed_cursor` for the same starvation reason as poll.
 - **Persist runs even when Poll fails**, so a notification error doesn't discard collected prices,
   but only after a successful restore and never with a hot SQLite journal present.
 - **The repo must stay public.** Branch protection on a private repo needs GitHub Pro; the API
