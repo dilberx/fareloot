@@ -117,6 +117,18 @@ Three things here are easy to break:
   `fareloot-watch` concurrency group and the restore/persist guards; a second workflow
   force-pushing `fareloot-data` concurrently would drop one run's data. `watcher.seed` rotates
   with its own `seed_cursor` for the same starvation reason as poll.
+- **`fareloot-data` holds `fareloot.db.enc`, never plaintext.** The branch is public and the
+  observations table names every polled route, enough to rebuild the gitignored watchlist. Restore
+  decrypts with `FARELOOT_DATA_KEY` and runs SQLite's integrity check (CBC is unauthenticated, so a
+  wrong key can occasionally "decrypt"); Persist encrypts and proves the round trip with `cmp`
+  before pushing. A missing key aborts the run. Public logs follow the same rule: in CI,
+  `cli._report_errors` groups provider errors by cause because they name routes, and
+  `load_watchlist` raises `WatchlistError` with field locations but never values.
+- **Alerts are recorded only after delivery** (`watcher.record_alerts`, called by the CLI with
+  what `send_deals` actually delivered). Recording inside `poll` let a failed send mark a deal as
+  sent, and the cooldown then hid it.
+- **A run where every provider call failed exits non-zero** and leaves both cursors where they
+  were (`PollResult/SeedResult.all_calls_failed`). Before this a revoked token produced green runs.
 - **Persist runs even when Poll fails**, so a notification error doesn't discard collected prices,
   but only after a successful restore and never with a hot SQLite journal present.
 - **The repo must stay public.** Branch protection on a private repo needs GitHub Pro; the API

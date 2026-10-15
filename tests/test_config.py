@@ -5,7 +5,7 @@ copy under version control. Nothing else would catch it rotting.
 import pytest
 import yaml
 
-from fareloot.config import DEFAULT_WATCHLIST_YAML, Watchlist, load_watchlist
+from fareloot.config import DEFAULT_WATCHLIST_YAML, Watchlist, WatchlistError, load_watchlist
 
 
 def _default() -> Watchlist:
@@ -75,3 +75,24 @@ def test_overlapping_bands_are_rejected():
     raw["trip_bands"] = [[3, 8], [7, 10]]
     with pytest.raises(ValueError, match="overlap"):
         Watchlist.model_validate(raw)
+
+
+def test_invalid_watchlist_error_names_the_field_but_not_its_values(tmp_path):
+    # The deployed watchlist is a secret, and this error lands in a public log.
+    bad = DEFAULT_WATCHLIST_YAML.replace("name: Trivandrum,", "")
+    path = tmp_path / "watchlist.yaml"
+    path.write_text(bad, encoding="utf-8")
+    with pytest.raises(WatchlistError) as exc:
+        load_watchlist(path)
+    msg = str(exc.value)
+    assert "origins.1.name" in msg
+    for leaked in ("TRV", "4.5", "400", "train"):
+        assert leaked not in msg, leaked
+
+
+def test_malformed_yaml_error_does_not_echo_lines(tmp_path):
+    path = tmp_path / "watchlist.yaml"
+    path.write_text("origins:\n  - { iata: COK, name: Kochi\n", encoding="utf-8")
+    with pytest.raises(WatchlistError) as exc:
+        load_watchlist(path)
+    assert "COK" not in str(exc.value) and "Kochi" not in str(exc.value)

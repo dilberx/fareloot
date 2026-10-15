@@ -40,7 +40,18 @@ jobs:
         # exit code alone, so failing loudly is possible without parsing
         # localisable stderr. Anything other than present-or-absent aborts the
         # job, which skips Persist and leaves the existing history untouched.
+        #
+        # The branch is public, so the database is stored encrypted: its rows name
+        # every route polled, which is enough to reconstruct the private watchlist.
+        # A missing key, a wrong key, or a file that fails SQLite's integrity check
+        # all abort here, for the same reason as an unreachable remote.
+        env:
+          FARELOOT_DATA_KEY: ${{ secrets.FARELOOT_DATA_KEY }}
         run: |
+          if [ -z "$FARELOOT_DATA_KEY" ]; then
+            echo "::error::FARELOOT_DATA_KEY secret is not set; refusing to run so history is never stored unencrypted"
+            exit 1
+          fi
           mkdir -p data
           set +e
           git ls-remote --exit-code origin refs/heads/fareloot-data >/dev/null 2>&1
@@ -49,7 +60,17 @@ jobs:
           case "$code" in
             0)
               git fetch --depth=1 origin fareloot-data:refs/remotes/origin/fareloot-data
-              git show origin/fareloot-data:fareloot.db > data/fareloot.db
+              if git cat-file -e origin/fareloot-data:fareloot.db.enc 2>/dev/null; then
+                git show origin/fareloot-data:fareloot.db.enc > "$RUNNER_TEMP/fareloot.db.enc"
+                openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -pass env:FARELOOT_DATA_KEY                   -in "$RUNNER_TEMP/fareloot.db.enc" -out data/fareloot.db
+              elif git cat-file -e origin/fareloot-data:fareloot.db 2>/dev/null; then
+                git show origin/fareloot-data:fareloot.db > data/fareloot.db
+                echo "found unencrypted history; it will be stored encrypted from this run on"
+              else
+                echo "::error::fareloot-data exists but holds no database; aborting"
+                exit 1
+              fi
+              python3 -c 'import sqlite3, sys; r = sqlite3.connect(sys.argv[1]).execute("PRAGMA integrity_check").fetchone()[0]; sys.exit(0 if r == "ok" else "integrity_check: " + r)' data/fareloot.db
               echo "restored $(stat -c%s data/fareloot.db) bytes of price history"
               ;;
             2)
@@ -116,17 +137,24 @@ jobs:
         # still goes red. Gated on a successful restore, because pushing after
         # an inconclusive restore would overwrite the accumulated history.
         if: ${{ !cancelled() && inputs.mode != 'test-alert' && steps.restore.outcome == 'success' && hashFiles('data/fareloot.db') != '' }}
+        env:
+          FARELOOT_DATA_KEY: ${{ secrets.FARELOOT_DATA_KEY }}
         run: |
           if [ -e data/fareloot.db-journal ]; then
             echo "::error::hot SQLite journal present - the poll was killed mid-write; not persisting"
             exit 1
           fi
-          cp data/fareloot.db /tmp/fareloot.db
-          echo "persisting $(stat -c%s /tmp/fareloot.db) bytes of price history"
+          enc="$RUNNER_TEMP/fareloot.db.enc"
+          openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -salt -pass env:FARELOOT_DATA_KEY             -in data/fareloot.db -out "$enc"
+          # Prove the file decrypts back to this exact database before it is
+          # allowed to replace the stored history.
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -pass env:FARELOOT_DATA_KEY             -in "$enc" -out "$RUNNER_TEMP/roundtrip.db"
+          cmp data/fareloot.db "$RUNNER_TEMP/roundtrip.db"
+          echo "persisting $(stat -c%s data/fareloot.db) bytes of price history, encrypted"
           git checkout --orphan fareloot-data
           git rm -rf . >/dev/null 2>&1 || true
-          cp /tmp/fareloot.db fareloot.db
-          git add fareloot.db
+          cp "$enc" fareloot.db.enc
+          git add fareloot.db.enc
           git -c user.name="fareloot-bot" -c user.email="actions@users.noreply.github.com" \
             commit -m "data: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
           git push --force origin HEAD:fareloot-data

@@ -11,7 +11,9 @@ from fareloot.watcher import (
     format_alert_lines,
     poll,
     ranked_total,
+    record_alerts,
     seed,
+    summarize_errors,
 )
 
 
@@ -145,6 +147,7 @@ def test_cooldown_suppresses_repeat_alerts_until_redrop(store):
     r1 = poll(provider, store, wl, today=today)
     gyd_alerts = [d for d in r1.to_alert if d.quote.destination == "GYD"]
     assert len(gyd_alerts) > 0
+    record_alerts(store, r1.to_alert)  # the caller records what it delivered
 
     r2 = poll(provider, store, wl, today=today)
     gyd_alerts_2 = [d for d in r2.to_alert if d.quote.destination == "GYD"]
@@ -360,3 +363,65 @@ def test_baseline_pools_the_whole_trip_band(store):
     # A 9-day quote has no 9-day history at all, but the 7-10 band does.
     assert store.route_history("COK", "GYD", 9) == []
     assert len(store.route_history("COK", "GYD", 9, band=wl.band_for(9))) == 8
+
+
+def test_undelivered_alerts_are_not_suppressed_next_run(store):
+    # Alerts used to be recorded inside poll(), before Telegram was called. A
+    # failed send left them marked as delivered and the cooldown hid the deal.
+    wl = _watchlist(["GYD"])
+    today = date(2026, 11, 1)
+    provider = MockProvider(today=today)
+    _seed_route(store, provider, "COK", "GYD", ["2026-11", "2026-12"])
+
+    first = poll(provider, store, wl, today=today)
+    assert first.to_alert
+    # ...and the send fails, so nothing is recorded.
+    second = poll(provider, store, wl, today=today)
+    assert len(second.to_alert) == len(first.to_alert)
+
+
+class _DeadTokenProvider(MockProvider):
+    def _boom(self, *a, **kw):
+        self.calls_made += 1
+        raise RuntimeError("returned HTTP 401")
+
+    cheap = month_matrix = city_directions = latest = _boom
+
+
+def test_dead_token_poll_reports_failure_and_keeps_cursor(store):
+    wl = _multi_origin_watchlist(["GYD", "TBS"])
+    today = date(2026, 11, 1)
+    r = poll(_DeadTokenProvider(today=today), store, wl, today=today, call_budget=30)
+    assert r.all_calls_failed
+    assert r.observations_recorded == 0
+    assert store.get_meta("wishlist_cursor", "0") == "0"
+
+
+def test_dead_token_seed_does_not_claim_a_cycle(store):
+    wl = _multi_origin_watchlist(["GYD"])
+    today = date(2026, 11, 1)
+    r = seed(_DeadTokenProvider(today=today), store, wl, today=today)  # unbounded: whole cycle
+    assert r.all_calls_failed
+    assert not r.cycle_completed
+    assert store.get_meta("seed_cursor", "0") == "0"
+
+
+def test_partial_failure_is_not_reported_as_total(store):
+    class HalfDead(MockProvider):
+        def city_directions(self, origin):
+            raise RuntimeError("returned HTTP 503")
+
+    wl = _multi_origin_watchlist(["GYD"])
+    today = date(2026, 11, 1)
+    r = poll(HalfDead(today=today), store, wl, today=today, call_budget=30)
+    assert r.errors and not r.all_calls_failed
+
+
+def test_error_summary_strips_routes():
+    errors = ["cheap COK->BKK: returned HTTP 503", "reverse GYD->BLR: returned HTTP 503",
+              "latest MAA: call budget of 140 exhausted"]
+    summary = summarize_errors(errors)
+    assert summary == [("returned HTTP 503", 2), ("call budget of 140 exhausted", 1)]
+    text = " ".join(cause for cause, _ in summary)
+    for code in ("COK", "BKK", "GYD", "BLR", "MAA"):
+        assert code not in text

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from typing import NoReturn
 
 import typer
 
@@ -10,13 +12,15 @@ from .config import (
     DEFAULT_DB_PATH,
     DEFAULT_WATCHLIST_YAML,
     Settings,
+    Watchlist,
+    WatchlistError,
     load_watchlist,
 )
 from .models import Quote
 from .providers.mock import MockProvider
 from .providers.travelpayouts import TravelpayoutsProvider
 from .store import Store
-from .watcher import poll, score_quotes
+from .watcher import poll, record_alerts, score_quotes, summarize_errors
 from .watcher import seed as seed_routes
 
 app = typer.Typer(add_completion=False, help="Catch abnormally cheap round trips from Kerala.")
@@ -66,7 +70,7 @@ def seed(
     ),
 ) -> None:
     """Bootstrap baselines from month-matrix calendars, in both directions."""
-    wl = load_watchlist()
+    wl = _load_watchlist()
     settings = Settings()
     p = _make_provider(provider, settings, max_calls=max_calls)
     with Store(DEFAULT_DB_PATH) as store:
@@ -74,10 +78,11 @@ def seed(
         budget = None if provider == "mock" else int(max_calls * 0.9)
         r = seed_routes(p, store, wl, call_budget=budget)
 
-    for err in r.errors[:5]:
-        typer.secho(f"warning: {err}", fg=typer.colors.YELLOW)
-    if len(r.errors) > 5:
+    _report_errors(r.errors[:5] if not _in_ci() else r.errors)
+    if not _in_ci() and len(r.errors) > 5:
         typer.secho(f"warning: ...and {len(r.errors) - 5} more", fg=typer.colors.YELLOW)
+    if r.all_calls_failed:
+        _fail("every provider call failed - nothing was seeded and the cursor did not move")
 
     end = r.start + r.tasks_done
     typer.echo(
@@ -98,6 +103,41 @@ def seed_range_label(start: int, done: int, total: int) -> str:
     if end <= total:
         return f"tasks {start}-{end} of {total}"
     return f"tasks {start}-{total} and 0-{end - total} of {total}"
+
+
+def _in_ci() -> bool:
+    return os.environ.get("GITHUB_ACTIONS") == "true"
+
+
+def _fail(message: str) -> NoReturn:
+    if _in_ci():
+        typer.echo(f"::error::{message}")
+    else:
+        typer.secho(message, fg=typer.colors.RED)
+    raise typer.Exit(1)
+
+
+def _report_errors(errors: list[str]) -> None:
+    """Print provider errors without revealing the watchlist in public logs.
+
+    Each error names its route, and in CI those route pairs land in a public
+    Actions log, so there they are grouped by cause instead.
+    """
+    if not errors:
+        return
+    if _in_ci():
+        for cause, n in summarize_errors(errors):
+            typer.echo(f"::warning::{n} provider call(s) failed: {cause}")
+        return
+    for err in errors:
+        typer.secho(f"warning: {err}", fg=typer.colors.YELLOW)
+
+
+def _load_watchlist() -> Watchlist:
+    try:
+        return load_watchlist()
+    except WatchlistError as exc:
+        _fail(str(exc))
 
 
 def _row_to_quote(row) -> Quote:
@@ -129,8 +169,16 @@ def poll_cmd(
     """Fetch fresh prices, score them, and alert on anything hot."""
     from .config import DEFAULT_DB_PATH
 
-    wl = load_watchlist()
+    if notify not in ("console", "telegram"):
+        typer.secho(f"Unknown --notify value: {notify}", fg=typer.colors.RED)
+        raise typer.Exit(1)
     settings = Settings()
+    if notify == "telegram" and not settings.has_telegram:
+        # Checked before polling so a misconfigured run spends no API calls and
+        # records nothing it cannot deliver.
+        _fail("Telegram is not configured - set the two FARELOOT_TELEGRAM_* secrets.")
+
+    wl = _load_watchlist()
     p = _make_provider(provider, settings, max_calls=max_calls)
     with Store(DEFAULT_DB_PATH) as store:
         result = poll(
@@ -145,37 +193,39 @@ def poll_cmd(
         )
         store.prune()
 
-    for err in result.errors:
-        typer.secho(f"warning: {err}", fg=typer.colors.YELLOW)
-
+    _report_errors(result.errors)
     typer.echo(
         f"Recorded {result.observations_recorded} observations, "
         f"{result.calls_made} API calls, {len(result.to_alert)} new alert(s)."
     )
+    if result.all_calls_failed:
+        _fail("every provider call failed - check FARELOOT_TP_TOKEN and Travelpayouts status")
 
     if notify == "console":
         from .notify.console import render
 
         render(result.deals, wl)
-    elif notify == "telegram":
-        if not settings.has_telegram:
-            typer.secho(
-                "Telegram is not configured - set the two FARELOOT_TELEGRAM_* vars.",
-                fg=typer.colors.RED,
-            )
-            raise typer.Exit(1)
-        from .notify.telegram import send_deals
-
-        send_deals(
-            settings.telegram_bot_token,
-            settings.telegram_chat_id,
-            result.to_alert,
-            settings.tp_marker,
-        )
-        typer.echo(f"Sent {len(result.to_alert)} alert(s) to Telegram.")
+        delivered = result.to_alert
     else:
-        typer.secho(f"Unknown --notify value: {notify}", fg=typer.colors.RED)
-        raise typer.Exit(1)
+        from .notify.telegram import TelegramError, send_deals
+
+        try:
+            delivered = send_deals(
+                settings.telegram_bot_token,
+                settings.telegram_chat_id,
+                result.to_alert,
+                settings.tp_marker,
+            )
+        except TelegramError as exc:
+            # Record what did reach Telegram; the rest stays eligible next run
+            # instead of being hidden by the cooldown.
+            with Store(DEFAULT_DB_PATH) as store:
+                record_alerts(store, exc.delivered)
+            _fail(f"{exc} ({len(exc.delivered)} of {len(result.to_alert)} alerts delivered)")
+        typer.echo(f"Sent {len(delivered)} alert(s) to Telegram.")
+
+    with Store(DEFAULT_DB_PATH) as store:
+        record_alerts(store, delivered)
 
 
 app.command(name="poll")(poll_cmd)
@@ -189,7 +239,7 @@ def deals(
     limit: int = typer.Option(30, help="How many rows to show"),
 ) -> None:
     """Show currently scored deals without sending any alerts."""
-    wl = load_watchlist()
+    wl = _load_watchlist()
     settings = Settings()
     with Store(DEFAULT_DB_PATH) as store:
         if provider == "mock":

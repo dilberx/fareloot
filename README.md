@@ -61,6 +61,7 @@ then trigger it once manually from the Actions tab to confirm it works:
 | `FARELOOT_TELEGRAM_BOT_TOKEN` | Your @BotFather bot token. |
 | `FARELOOT_TELEGRAM_CHAT_ID` | Where alerts get sent. |
 | `FARELOOT_WATCHLIST_YAML` | Optional. The full contents of your `config/watchlist.yaml`. |
+| `FARELOOT_DATA_KEY` | Encrypts the stored price history. Required; runs refuse to start without it. |
 
 `config/watchlist.yaml` is gitignored, so your home airports and destination
 wishlist stay off a public repo. The workflow writes the file from
@@ -70,6 +71,24 @@ deployed watcher, paste the edited file into that secret.
 
 Price history is kept on a separate `fareloot-data` branch, not in `main`'s
 commit history, so the repo doesn't grow forever.
+
+That branch is public, and the database records every route polled, which is
+enough to rebuild your watchlist. So it is stored encrypted as `fareloot.db.enc`,
+using `FARELOOT_DATA_KEY`. Generate the key once in PowerShell and keep a copy in a
+password manager. GitHub never shows a secret again, and without the key the
+stored history cannot be read or restored:
+
+```powershell
+$k = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)); $k | Set-Clipboard; $k | gh secret set FARELOOT_DATA_KEY
+```
+
+To inspect the history locally, with `FARELOOT_DATA_KEY` set in your shell:
+
+```bash
+git fetch origin fareloot-data
+git show origin/fareloot-data:fareloot.db.enc > fareloot.db.enc
+openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -pass env:FARELOOT_DATA_KEY -in fareloot.db.enc -out data/fareloot.db
+```
 
 A route sends no alerts until it has price history. To build it quickly, run the
 workflow manually with mode **seed** (Actions -> watch -> Run workflow), or:
