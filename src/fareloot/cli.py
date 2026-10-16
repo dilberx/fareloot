@@ -114,6 +114,30 @@ def seed_range_label(start: int, done: int, total: int) -> str:
     return f"tasks {start}-{total} and 0-{end - total} of {total}"
 
 
+def _closeness(deals, steal_at: int) -> str:
+    """How near this run came to alerting, so a quiet run reads as quiet, not broken.
+
+    Counts and scores only: route names in a public Actions log would reveal the
+    watchlist.
+    """
+    from .models import Tier
+
+    tiers = [Tier.JACKPOT, Tier.LOOT, Tier.STEAL, Tier.DEAL]
+    counts = ", ".join(f"{sum(d.tier == t for d in deals)} {t.value}" for t in tiers)
+    if not deals:
+        return f"Scored 0 fares this run ({counts})."
+    best = max(deals, key=lambda d: d.hotness)
+    how = (
+        f"{best.pct_below:.0f}% below its usual price"
+        if best.baseline_inr
+        else "on a route with no baseline yet"
+    )
+    return (
+        f"Scored {len(deals)} fares: {counts}. Closest to an alert: hotness {best.hotness} "
+        f"({how}); STEAL needs {steal_at}."
+    )
+
+
 def _in_ci() -> bool:
     return os.environ.get("GITHUB_ACTIONS") == "true"
 
@@ -209,6 +233,7 @@ def poll_cmd(
     )
     if result.all_calls_failed:
         _fail("every provider call failed - check FARELOOT_TP_TOKEN and Travelpayouts status")
+    typer.echo(_closeness(result.deals, wl.alerts.tiers.steal))
 
     if notify == "console":
         from .notify.console import render

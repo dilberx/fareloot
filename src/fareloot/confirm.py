@@ -29,6 +29,14 @@ class ConfirmError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class LivePrice:
+    price: int
+    # Google's own verdict on this fare, from an entirely separate dataset.
+    level: str = ""  # "low", "typical" or "high"
+    typical: tuple[int, int] | None = None
+
+
 class SerpApiFlights:
     """Live round-trip prices from Google Flights via SerpApi."""
 
@@ -40,6 +48,11 @@ class SerpApiFlights:
 
     def live_price(self, q: Quote) -> int | None:
         """Lowest live price for this exact itinerary, or None if nothing is listed."""
+        live = self.live_quote(q)
+        return live.price if live else None
+
+    def live_quote(self, q: Quote) -> LivePrice | None:
+        """Lowest live price plus Google's price insights, or None if nothing is listed."""
         params: dict[str, Any] = {
             "engine": "google_flights",
             "departure_id": q.origin,
@@ -72,7 +85,20 @@ class SerpApiFlights:
             raise ConfirmError(f"live check failed: {str(error)[:160]}")
         if resp.status_code != 200:
             raise ConfirmError(f"live check returned HTTP {resp.status_code}")
-        return _lowest_price(data)
+        price = _lowest_price(data)
+        if price is None:
+            return None
+        insights = data.get("price_insights") or {}
+        level = insights.get("price_level")
+        band = insights.get("typical_price_range")
+        typical = None
+        if (
+            isinstance(band, list)
+            and len(band) == 2
+            and all(isinstance(x, int | float) for x in band)
+        ):
+            typical = (int(band[0]), int(band[1]))
+        return LivePrice(price, level if isinstance(level, str) else "", typical)
 
 
 def _lowest_price(data: dict[str, Any]) -> int | None:
@@ -94,19 +120,30 @@ class Confirmation:
     status: str  # "confirmed", "stale", or "unconfirmed"
     live_price: int | None
     note: str
+    google_level: str = ""
+    google_typical: tuple[int, int] | None = None
 
 
 def check(confirmer: SerpApiFlights, deal: Deal) -> Confirmation:
     cached = deal.quote.price_inr
     try:
-        live = confirmer.live_price(deal.quote)
+        live = _live(confirmer, deal.quote)
     except ConfirmError as exc:
         return Confirmation("unconfirmed", None, str(exc))
     if live is None:
         return Confirmation("unconfirmed", None, "not listed on Google Flights")
-    if live > cached * (1 + STALE_TOLERANCE):
-        return Confirmation("stale", live, f"live price Rs {live:,} vs cached Rs {cached:,}")
-    return Confirmation("confirmed", live, "")
+    if live.price > cached * (1 + STALE_TOLERANCE):
+        note = f"live price Rs {live.price:,} vs cached Rs {cached:,}"
+        return Confirmation("stale", live.price, note)
+    return Confirmation("confirmed", live.price, "", live.level, live.typical)
+
+
+def _live(confirmer, q: Quote) -> LivePrice | None:
+    # Confirmers that only report a price (older fakes, other sources) still work.
+    if hasattr(confirmer, "live_quote"):
+        return confirmer.live_quote(q)
+    price = confirmer.live_price(q)
+    return LivePrice(price) if price is not None else None
 
 
 def _usage_key(now: datetime) -> str:
@@ -148,6 +185,8 @@ def confirm_alerts(
             stale.append(deal)
         elif result.status == "confirmed":
             deal.live_price_inr = result.live_price
+            deal.google_level = result.google_level
+            deal.google_typical = result.google_typical
             send.append(deal)
         else:
             deal.live_note = f"not live-checked: {result.note}"
