@@ -49,7 +49,9 @@ Real fare data arrives in dozens of trip lengths, including 0-2 day "round trips
 round trip is kept only if its length falls inside a configured band (default 3-6, 7-10, 11-21
 days), and its baseline is every observation in that band (`Store.route_history(..., band=...)`),
 not its exact length. `watcher.usable_quotes` drops out-of-band quotes before they are recorded or
-scored. Without it, same-day returns get their own cheap-looking baselines and can alert.
+scored. Without it, same-day returns get their own cheap-looking baselines and can alert. It also
+drops past departures: cached prices live for days, so a fare for a flight that has already left
+can still come back from the provider.
 
 ### Lowest-fare rules are a second way in, not a change to scoring
 
@@ -71,8 +73,12 @@ it and records it with `record_alerts` so the dead cache entry cools down instea
 search every run; anything else (no key, error, no results, monthly cap in `meta`
 `live_checks:YYYY-MM`) sends labelled unconfirmed. A checker fault must never cost a real deal.
 The key is a URL query parameter, so request exceptions are re-raised without the URL, as in
-`notify/telegram.py`. SerpApi's docs don't state that a round-trip `price` covers both legs;
-`fareloot live-check` exists to verify that against a real response.
+`notify/telegram.py`. `fareloot live-check` verified on live data that a round-trip `price` is
+the total for both legs (round trip / one way = 1.88 on COK-DXB). Confirmed alerts also carry
+Google's `price_insights` verdict (level and typical range), shown but never used as a gate.
+
+Every poll prints a closeness line (`cli._closeness`): fares scored per tier and the best hotness.
+It exists so a quiet run reads as quiet, not broken, and it never names routes.
 
 ### Hotness scoring (`scoring.py`)
 

@@ -224,3 +224,54 @@ def test_poll_command_end_to_end_drops_stale_and_sends_confirmed(monkeypatch, tm
     rows = sqlite3.connect("data/fareloot.db").execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
     sent_count = int(summary.split()[-3])
     assert rows == confirmed + stale + sent_count
+
+
+def test_live_quote_carries_googles_verdict():
+    f, _ = _flights(
+        {
+            "best_flights": [{"price": 7250}],
+            "price_insights": {"price_level": "low", "typical_price_range": [9000, 12500]},
+        }
+    )
+    live = f.live_quote(_deal().quote)
+    assert (live.price, live.level, live.typical) == (7250, "low", (9000, 12500))
+
+
+def test_malformed_insights_are_ignored_not_fatal():
+    f, _ = _flights(
+        {
+            "best_flights": [{"price": 7250}],
+            "price_insights": {"price_level": 3, "typical_price_range": [690]},
+        }
+    )
+    live = f.live_quote(_deal().quote)
+    assert (live.price, live.level, live.typical) == (7250, "", None)
+
+
+def test_confirmed_alert_shows_googles_verdict(store):
+    f, _ = _flights(
+        {
+            "best_flights": [{"price": 7100}],
+            "price_insights": {"price_level": "low", "typical_price_range": [9000, 12500]},
+        }
+    )
+    d = _deal(7000)
+    send, _ = confirm_alerts([d], f, store, monthly_cap=200, now=NOW)
+    text = "\n".join(format_alert_lines(send[0]))
+    assert "live on Google Flights: Rs 7,100" in text
+    assert "Google rates it low; typical Rs 9,000-12,500" in text
+
+
+def test_every_poll_says_how_close_it_came(monkeypatch, tmp_path):
+    from typer.testing import CliRunner
+
+    from fareloot.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    runner.invoke(app, ["init"])
+    r = runner.invoke(app, ["poll", "--provider", "mock", "--notify", "console", "--no-discovery"])
+    line = next(x for x in r.output.splitlines() if x.startswith("Scored "))
+    assert "JACKPOT" in line and "Closest to an alert: hotness" in line and "STEAL needs 65" in line
+    for code in ("COK", "GYD", "DXB", "BKK"):
+        assert code not in line  # public logs must not name routes
