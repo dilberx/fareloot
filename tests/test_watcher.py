@@ -545,3 +545,28 @@ def test_run_does_not_count_its_own_prices_as_baseline(store):
     _seed_route(store, provider, "COK", "GYD", ["2026-11", "2026-12"])
     result = poll(provider, store, wl, today=today, include_discovery=False)
     assert any(d.quote.destination == "GYD" and d.tier.pushes for d in result.deals)
+
+
+def test_departed_flights_are_never_recorded_or_alerted():
+    from fareloot.watcher import usable_quotes
+
+    wl = _watchlist(["GYD"])
+    today = date(2026, 10, 17)
+    past = Quote(
+        origin="COK",
+        destination="GYD",
+        depart_date=date(2026, 10, 5),
+        return_date=date(2026, 10, 15),
+        price_inr=5000,
+    )
+    future = Quote(
+        origin="COK",
+        destination="GYD",
+        depart_date=date(2026, 11, 5),
+        return_date=date(2026, 11, 15),
+        price_inr=5000,
+    )
+    departed_one_way = Quote(
+        origin="GYD", destination="COK", depart_date=date(2026, 10, 16), price_inr=4000
+    )
+    assert usable_quotes(wl, [past, future, departed_one_way], today) == [future]

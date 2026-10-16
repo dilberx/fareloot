@@ -101,6 +101,9 @@ class Deal:
     # Set by the live check (confirm.py) just before an alert is sent.
     live_price_inr: int | None = None
     live_note: str = ""
+    # Google's verdict on the live price: informational, never a gate.
+    google_level: str = ""
+    google_typical: tuple[int, int] | None = None
 
     @property
     def total_inr(self) -> int:

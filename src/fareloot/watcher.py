@@ -25,12 +25,20 @@ CALLS_PER_FAR_ITEM = 2  # one round-trip month plus its reverse one-way
 CALLS_PER_PAIR = 3  # two round-trip months plus one reverse one-way
 
 
-def usable_quotes(wl: Watchlist, quotes: list[Quote]) -> list[Quote]:
-    """Drop round trips whose length falls outside every configured trip band.
+def usable_quotes(wl: Watchlist, quotes: list[Quote], today: date | None = None) -> list[Quote]:
+    """Drop quotes no one could book: past departures, and round trips whose
+    length falls outside every configured trip band.
 
-    One-way quotes are always kept; they back the return-leg gate.
+    Cached prices live for days, so a fare searched last week for a flight that
+    has since left can still come back from the provider.
+    One-way quotes in the future are always kept; they back the return-leg gate.
     """
-    return [q for q in quotes if q.trip_length is None or wl.band_for(q.trip_length)]
+    today = today or date.today()
+    return [
+        q
+        for q in quotes
+        if q.depart_date >= today and (q.trip_length is None or wl.band_for(q.trip_length))
+    ]
 
 
 def _wishlist_slice(
@@ -320,7 +328,9 @@ def seed(
         origin_iata, destination, month = tasks[(start + i) % len(tasks)]
         for a, b in ((origin_iata, destination), (destination, origin_iata)):
             try:
-                recorded += store.record(usable_quotes(wl, provider.month_matrix(a, b, month)))
+                recorded += store.record(
+                    usable_quotes(wl, provider.month_matrix(a, b, month), today)
+                )
                 ok += 1
             except Exception as exc:
                 errors.append(f"month_matrix {a}->{b} {month}: {exc}")
@@ -426,7 +436,7 @@ def poll(
         if far_count and (ok > ok_before or len(errors) == errors_before):
             store.set_meta(FAR_CURSOR_KEY, str((far_start + far_count) % len(far_items)))
 
-    all_quotes = usable_quotes(wl, all_quotes)
+    all_quotes = usable_quotes(wl, all_quotes, today)
     recorded = store.record(all_quotes)
     deals = score_quotes(
         store, wl, all_quotes, origins, reverse_quotes, marker=marker, as_of=run_started
@@ -518,6 +528,14 @@ def format_alert_lines(deal: Deal, marker: str = "") -> list[str]:
         lines.append(f"one way Rs {q.price_inr:,}  ({q.depart_date:%d %b})")
     if deal.live_price_inr is not None:
         lines.append(f"  live on Google Flights: Rs {deal.live_price_inr:,}")
+        verdict = []
+        if deal.google_level:
+            verdict.append(f"Google rates it {deal.google_level}")
+        if deal.google_typical:
+            lo, hi = deal.google_typical
+            verdict.append(f"typical Rs {lo:,}-{hi:,}")
+        if verdict:
+            lines.append(f"  {'; '.join(verdict)}")
     elif deal.live_note:
         lines.append(f"  {deal.live_note}")
     for reason in deal.reasons:
