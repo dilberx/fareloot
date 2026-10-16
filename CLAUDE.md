@@ -88,6 +88,16 @@ rupees saved, reach penalty) is multiplied by three gates that can only ever pul
 can't manufacture a jackpot), and `staleness` (discounts quotes near `expires_at`). Weights and gate
 constants live at the top of the file as named constants, not magic numbers inline.
 
+### Travelpayouts endpoints (`providers/travelpayouts.py`)
+
+`cheap()` calls `/aviasales/v3/prices_for_dates`, which Travelpayouts recommends over the deprecated
+`/v1/prices/cheap`. Until v3 is proven on live data it falls back to `cheap_v1` on any failure,
+including a response that isn't a `data` list, and skips v3 for the rest of a run after
+`V3_MAX_FAILURES`, so a dead endpoint doesn't double every call. Budget exhaustion is re-raised,
+never hidden by the fallback. v3 quotes take their route codes from the request, not the response,
+which names cities and airports separately. `fareloot provider-check` (workflow mode
+`provider-check`) compares v1, v3 and markets on one route; `FARELOOT_TP_MARKET` forces a market.
+
 ### Two hunting arms, one promotion path (`watcher.poll`)
 
 - **Wishlist**: named destinations in `config/watchlist.yaml`, priced as proper round trips.

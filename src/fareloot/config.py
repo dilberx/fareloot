@@ -23,6 +23,8 @@ class Settings(BaseSettings):
 
     tp_token: str = ""
     tp_marker: str = ""
+    # Aviasales market to read cached prices from; empty lets the API infer it.
+    tp_market: str = ""
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     serpapi_key: str = ""

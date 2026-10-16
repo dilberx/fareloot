@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "poll = normal run; seed = bootstrap baselines (run until it reports a full cycle); test-alert = send one Telegram message to check the secrets; live-check = price one route live on Google Flights to check the SerpApi key"
+        description: "poll = normal run; seed = bootstrap baselines (run until it reports a full cycle); test-alert = send one Telegram message to check the secrets; live-check = price one route live on Google Flights to check the SerpApi key; provider-check = compare Travelpayouts endpoints and markets on one route"
         type: choice
-        options: [poll, seed, test-alert, live-check]
+        options: [poll, seed, test-alert, live-check, provider-check]
         default: poll
       seed_destinations:
         description: "seed only: comma-separated destinations, e.g. SHJ,RKT (empty = all)"
@@ -134,9 +134,16 @@ jobs:
           FARELOOT_SERPAPI_KEY: ${{ secrets.FARELOOT_SERPAPI_KEY }}
         run: uv run fareloot live-check
 
+      - name: Provider check
+        # Spends 4 Travelpayouts calls comparing v1, v3, and markets on one route.
+        if: ${{ inputs.mode == 'provider-check' }}
+        env:
+          FARELOOT_TP_TOKEN: ${{ secrets.FARELOOT_TP_TOKEN }}
+        run: uv run fareloot provider-check
+
       - name: Poll
         # Scheduled runs have no inputs, so an empty mode means poll.
-        if: ${{ inputs.mode != 'seed' && inputs.mode != 'test-alert' && inputs.mode != 'live-check' }}
+        if: ${{ inputs.mode != 'seed' && inputs.mode != 'test-alert' && inputs.mode != 'live-check' && inputs.mode != 'provider-check' }}
         env:
           FARELOOT_TP_TOKEN: ${{ secrets.FARELOOT_TP_TOKEN }}
           FARELOOT_TELEGRAM_BOT_TOKEN: ${{ secrets.FARELOOT_TELEGRAM_BOT_TOKEN }}
@@ -153,7 +160,7 @@ jobs:
         # does not throw away the prices that were already collected; the job
         # still goes red. Gated on a successful restore, because pushing after
         # an inconclusive restore would overwrite the accumulated history.
-        if: ${{ !cancelled() && inputs.mode != 'test-alert' && inputs.mode != 'live-check' && steps.restore.outcome == 'success' && hashFiles('data/fareloot.db') != '' }}
+        if: ${{ !cancelled() && inputs.mode != 'test-alert' && inputs.mode != 'live-check' && inputs.mode != 'provider-check' && steps.restore.outcome == 'success' && hashFiles('data/fareloot.db') != '' }}
         env:
           FARELOOT_DATA_KEY: ${{ secrets.FARELOOT_DATA_KEY }}
         run: |

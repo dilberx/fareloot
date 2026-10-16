@@ -42,6 +42,7 @@ def _make_provider(name: str, settings: Settings, *, max_calls: int | None):
         marker=settings.tp_marker,
         cache_dir=DEFAULT_CACHE_DIR,
         max_calls=max_calls,
+        market=settings.tp_market,
     )
 
 
@@ -227,6 +228,10 @@ def poll_cmd(
         store.prune()
 
     _report_errors(result.errors)
+    fallbacks = getattr(p, "fallbacks", 0)
+    if fallbacks:
+        note = f"v3 prices_for_dates failed {fallbacks} time(s); used the deprecated v1 endpoint"
+        typer.echo(f"::warning::{note}" if _in_ci() else f"warning: {note}")
     typer.echo(
         f"Recorded {result.observations_recorded} observations, "
         f"{result.calls_made} API calls, {len(result.to_alert)} new alert(s)."
@@ -347,6 +352,51 @@ def health(
         typer.echo("Sent the warning to Telegram.")
     # Red in the Actions tab too, for anyone who does look there.
     raise typer.Exit(1)
+
+
+@app.command()
+def provider_check(
+    origin: str = typer.Option("COK"),
+    destination: str = typer.Option("DXB"),
+) -> None:
+    """Price one route through each Travelpayouts endpoint and market, side by side.
+
+    Spends 4 calls. Shows whether v3 prices_for_dates returns data at least as
+    good as the deprecated v1 endpoint, and whether forcing the India market
+    adds fares over letting the API infer one.
+    """
+    from datetime import date
+
+    from .providers.travelpayouts import ProviderError
+
+    settings = Settings()
+    p = _make_provider("travelpayouts", settings, max_calls=10)
+    today = date.today()
+    month = date(today.year + (today.month == 12), today.month % 12 + 1, 1).strftime("%Y-%m")
+    o, d = origin.upper(), destination.upper()
+    checks = [
+        ("v1 cheap, round trip", lambda: p.cheap_v1(o, d, month, month)),
+        (
+            "v3, round trip, inferred market",
+            lambda: p.prices_for_dates(o, d, month, month, market=""),
+        ),
+        ("v3, round trip, market=in", lambda: p.prices_for_dates(o, d, month, month, market="in")),
+        ("v3, one way back, inferred", lambda: p.prices_for_dates(d, o, month, market="")),
+    ]
+    typer.echo(f"{o}<->{d}, departures in {month}")
+    for label, fetch in checks:
+        try:
+            quotes = fetch()
+        except ProviderError as exc:
+            typer.echo(f"  {label:34s} FAILED: {exc}")
+            continue
+        if not quotes:
+            typer.echo(f"  {label:34s} 0 fares")
+            continue
+        lengths = sorted({q.trip_length for q in quotes if q.trip_length is not None})
+        span = f", trip lengths {lengths[0]}-{lengths[-1]}d" if lengths else ""
+        cheapest = min(q.price_inr for q in quotes)
+        typer.echo(f"  {label:34s} {len(quotes):3d} fares, cheapest Rs {cheapest:,}{span}")
 
 
 @app.command()
