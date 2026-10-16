@@ -21,6 +21,7 @@ CURRENCY = "inr"
 MAX_CALLS_PER_HOUR = 150
 MIN_INTERVAL_S = 0.25
 CACHE_TTL_S = 1800
+V3_MAX_FAILURES = 3
 
 
 class ProviderError(RuntimeError):
@@ -72,6 +73,7 @@ class TravelpayoutsProvider:
         cache_dir: Path | None = None,
         max_calls: int | None = None,
         client: httpx.Client | None = None,
+        market: str = "",
     ):
         if not token:
             raise ProviderError("no Travelpayouts token - set FARELOOT_TP_TOKEN in .env")
@@ -83,6 +85,15 @@ class TravelpayoutsProvider:
         self.limiter = RateLimiter()
         self.max_calls = max_calls
         self.calls_made = 0
+        # Aviasales caches prices per market. Empty lets the API infer it from
+        # the origin; provider-check measures whether forcing one adds data.
+        self.market = market
+        # v3 is the replacement Travelpayouts recommends for /v1/prices/cheap.
+        # Until it is proven on live data, a failure falls back to v1, and
+        # after V3_MAX_FAILURES in one run v3 is skipped so a dead endpoint
+        # doesn't double every call.
+        self.v3_failures = 0
+        self.fallbacks = 0
         self._client = client or httpx.Client(
             timeout=20.0, headers={"Accept-Encoding": "gzip, deflate"}
         )
@@ -162,6 +173,50 @@ class TravelpayoutsProvider:
     def cheap(
         self, origin: str, destination: str, depart: str, return_: str | None = None
     ) -> list[Quote]:
+        if self.v3_failures < V3_MAX_FAILURES:
+            try:
+                return self.prices_for_dates(origin, destination, depart, return_)
+            except ProviderError as exc:
+                if "call budget" in str(exc):
+                    raise
+                self.v3_failures += 1
+                self.fallbacks += 1
+        return self.cheap_v1(origin, destination, depart, return_)
+
+    def prices_for_dates(
+        self,
+        origin: str,
+        destination: str,
+        depart: str,
+        return_: str | None = None,
+        *,
+        market: str | None = None,
+    ) -> list[Quote]:
+        """Cheapest cached fares for a route and month, via the v3 endpoint."""
+        market = self.market if market is None else market
+        payload = self._get(
+            "/aviasales/v3/prices_for_dates",
+            {
+                "origin": origin,
+                "destination": destination,
+                "departure_at": depart,
+                "return_at": return_,
+                "one_way": "false" if return_ else "true",
+                "direct": "false",
+                "currency": CURRENCY,
+                "market": market or None,
+                "sorting": "price",
+                "unique": "false",
+                "limit": 100,
+                "page": 1,
+            },
+        )
+        return self._parse_v3(payload, origin, destination)
+
+    def cheap_v1(
+        self, origin: str, destination: str, depart: str, return_: str | None = None
+    ) -> list[Quote]:
+        """Deprecated by Travelpayouts; kept as the fallback for prices_for_dates."""
         payload = self._get(
             "/v1/prices/cheap",
             {
@@ -211,6 +266,42 @@ class TravelpayoutsProvider:
         return self._parse_array(payload)
 
     # -- parsing ---------------------------------------------------------
+
+    @staticmethod
+    def _parse_v3(payload: dict[str, Any], origin: str, destination: str) -> list[Quote]:
+        """Parse prices_for_dates. Keys come from the request, not the response.
+
+        The response names cities and airports separately; the request's codes
+        are the ones the rest of fareloot keys routes by.
+        """
+        data = payload.get("data")
+        if not isinstance(data, list):
+            raise ProviderError("prices_for_dates returned an unexpected shape")
+        now = datetime.now(UTC)
+        out: list[Quote] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            depart = parse_date(item.get("departure_at"))
+            try:
+                price = int(float(item.get("price")))
+            except (TypeError, ValueError):
+                continue
+            if depart is None or price <= 0:
+                continue
+            out.append(
+                Quote(
+                    origin=origin.upper(),
+                    destination=destination.upper(),
+                    depart_date=depart,
+                    return_date=parse_date(item.get("return_at")),
+                    price_inr=price,
+                    stops=item.get("transfers"),
+                    airline=item.get("airline"),
+                    observed_at=now,
+                )
+            )
+        return out
 
     @staticmethod
     def _parse_array(payload: dict[str, Any]) -> list[Quote]:
