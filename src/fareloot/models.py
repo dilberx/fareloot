@@ -98,6 +98,9 @@ class Deal:
     # Qualified by a lowest-fare rule: the route is at its cheapest in the rule's
     # window. Cooled down per route, not per departure date.
     lowest_in_window: bool = False
+    # Set by the live check (confirm.py) just before an alert is sent.
+    live_price_inr: int | None = None
+    live_note: str = ""
 
     @property
     def total_inr(self) -> int:

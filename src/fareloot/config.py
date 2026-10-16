@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     tp_marker: str = ""
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
+    serpapi_key: str = ""
+    # SerpApi's free tier is 250 searches a month; stay under it with headroom.
+    serpapi_monthly_cap: int = 200
 
     @property
     def has_provider(self) -> bool:

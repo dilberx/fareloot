@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "poll = normal run; seed = bootstrap baselines (run until it reports a full cycle); test-alert = send one Telegram message to check the secrets"
+        description: "poll = normal run; seed = bootstrap baselines (run until it reports a full cycle); test-alert = send one Telegram message to check the secrets; live-check = price one route live on Google Flights to check the SerpApi key"
         type: choice
-        options: [poll, seed, test-alert]
+        options: [poll, seed, test-alert, live-check]
         default: poll
       seed_destinations:
         description: "seed only: comma-separated destinations, e.g. SHJ,RKT (empty = all)"
@@ -126,13 +126,23 @@ jobs:
           FARELOOT_TELEGRAM_CHAT_ID: ${{ secrets.FARELOOT_TELEGRAM_CHAT_ID }}
         run: uv run fareloot test-alert
 
+      - name: Live check
+        # Spends two SerpApi searches: proves the key works and shows whether the
+        # round-trip price covers both legs.
+        if: ${{ inputs.mode == 'live-check' }}
+        env:
+          FARELOOT_SERPAPI_KEY: ${{ secrets.FARELOOT_SERPAPI_KEY }}
+        run: uv run fareloot live-check
+
       - name: Poll
         # Scheduled runs have no inputs, so an empty mode means poll.
-        if: ${{ inputs.mode != 'seed' && inputs.mode != 'test-alert' }}
+        if: ${{ inputs.mode != 'seed' && inputs.mode != 'test-alert' && inputs.mode != 'live-check' }}
         env:
           FARELOOT_TP_TOKEN: ${{ secrets.FARELOOT_TP_TOKEN }}
           FARELOOT_TELEGRAM_BOT_TOKEN: ${{ secrets.FARELOOT_TELEGRAM_BOT_TOKEN }}
           FARELOOT_TELEGRAM_CHAT_ID: ${{ secrets.FARELOOT_TELEGRAM_CHAT_ID }}
+          # Optional: without it, alerts are sent labelled as not live-checked.
+          FARELOOT_SERPAPI_KEY: ${{ secrets.FARELOOT_SERPAPI_KEY }}
         run: uv run fareloot poll --notify telegram
 
       - name: Persist price history
@@ -143,7 +153,7 @@ jobs:
         # does not throw away the prices that were already collected; the job
         # still goes red. Gated on a successful restore, because pushing after
         # an inconclusive restore would overwrite the accumulated history.
-        if: ${{ !cancelled() && inputs.mode != 'test-alert' && steps.restore.outcome == 'success' && hashFiles('data/fareloot.db') != '' }}
+        if: ${{ !cancelled() && inputs.mode != 'test-alert' && inputs.mode != 'live-check' && steps.restore.outcome == 'success' && hashFiles('data/fareloot.db') != '' }}
         env:
           FARELOOT_DATA_KEY: ${{ secrets.FARELOOT_DATA_KEY }}
         run: |
