@@ -41,6 +41,7 @@ class Analysis:
     discovery_only: list[tuple[str, int]]
     rule_routes_ready: int
     rule_routes_total: int
+    dry_routes: list[tuple[str, str]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
 
@@ -100,7 +101,23 @@ def analyse(conn: sqlite3.Connection, wl: Watchlist) -> Analysis:
                         span = (_ts(max(stamps)) - _ts(min(stamps))).total_seconds() / 86_400
                         ready += span >= rule.min_history_days
 
+    dry: list[tuple[str, str]] = []
+    has_yield = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='route_yield'"
+    ).fetchone()
+    if has_yield:
+        from .watcher import DRY_AFTER_MISSES
+
+        dry = sorted(
+            (r["origin"], r["destination"])
+            for r in conn.execute(
+                "SELECT origin, destination FROM route_yield WHERE misses_in_a_row >= ?",
+                (DRY_AFTER_MISSES,),
+            )
+        )
+
     return Analysis(
+        dry_routes=dry,
         total=len(rows),
         round_trips=rt_total,
         one_ways=sum(1 for r in rows if r["trip_length"] is None),
@@ -145,6 +162,7 @@ def public_report(a: Analysis) -> str:
         + ", ".join(f"{k}: {buckets.get(k, 0)}" for k in order)
     )
     lines.append(f"Destinations seen only via discovery: {len(a.discovery_only)}")
+    lines.append(f"Wishlist routes currently skipped as dry: {len(a.dry_routes)}")
     if a.rule_routes_total:
         lines.append(
             f"Lowest-fare rule route-bands with enough history: "
@@ -164,6 +182,11 @@ def private_report(a: Analysis) -> str:
         lines.append(
             f"{y.code}: {y.round_trips} | {y.one_ways_out}/{y.one_ways_back} | "
             f"{y.scoreable_bands} | {y.span_days:.1f}d{flag}"
+        )
+    if a.dry_routes:
+        lines.append(
+            f"\nSkipped as dry ({len(a.dry_routes)}): "
+            + ", ".join(f"{o}-{d}" for o, d in a.dry_routes)
         )
     if a.discovery_only:
         top = ", ".join(f"{d} {n}" for d, n in a.discovery_only[:12])

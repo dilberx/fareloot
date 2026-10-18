@@ -239,6 +239,11 @@ def poll_cmd(
     if result.all_calls_failed:
         _fail("every provider call failed - check FARELOOT_TP_TOKEN and Travelpayouts status")
     typer.echo(_closeness(result.deals, wl.alerts.tiers.steal))
+    if result.dry_skipped:
+        typer.echo(
+            f"Skipped {result.dry_skipped} check(s) on routes that keep returning nothing; "
+            "each is re-checked weekly."
+        )
 
     if notify == "console":
         from .notify.console import render

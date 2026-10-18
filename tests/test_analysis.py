@@ -85,3 +85,18 @@ def test_private_report_flags_dead_destinations(conn):
     text = private_report(analyse(conn, _wl()))
     assert "GYD: 0 | 0/0 | 0 | 0.0d  <- nothing yet" in text
     assert "MLE 3" in text
+
+
+def test_dry_routes_counted_publicly_and_named_privately(conn):
+    from datetime import UTC, datetime
+
+    from fareloot.store import Store
+
+    s = Store.__new__(Store)
+    s.conn = conn
+    for _ in range(3):
+        s.record_route_yield("BLR", "GYD", 0, datetime.now(UTC))
+    a = analyse(conn, _wl())
+    assert a.dry_routes == [("BLR", "GYD")]
+    assert "skipped as dry: 1" in public_report(a) and "GYD" not in public_report(a)
+    assert "BLR-GYD" in private_report(a)

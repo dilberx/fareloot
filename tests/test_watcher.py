@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -570,3 +570,89 @@ def test_departed_flights_are_never_recorded_or_alerted():
         origin="GYD", destination="COK", depart_date=date(2026, 10, 16), price_inr=4000
     )
     assert usable_quotes(wl, [past, future, departed_one_way], today) == [future]
+
+
+class _YieldProvider(MockProvider):
+    """Round trips for every route except those scripted as empty or failing."""
+
+    def __init__(self, empty=(), failing=(), **kw):
+        super().__init__(**kw)
+        self.empty, self.failing = set(empty), set(failing)
+        self.rt_calls: list[tuple[str, str]] = []
+
+    def cheap(self, origin, destination, depart, return_=None):
+        if return_:
+            self.rt_calls.append((origin, destination))
+            if (origin, destination) in self.failing:
+                raise RuntimeError("returned HTTP 503")
+            if (origin, destination) in self.empty:
+                return []
+        return super().cheap(origin, destination, depart, return_)
+
+
+TODAY = date(2026, 11, 1)
+
+
+def _run(store, wl, **kw):
+    p = _YieldProvider(today=TODAY, **kw)
+    result = poll(p, store, wl, today=TODAY, include_discovery=False)
+    return p, result
+
+
+def test_route_that_keeps_returning_nothing_is_skipped(store):
+    wl = _multi_origin_watchlist(["GYD", "TBS"])
+    for _ in range(3):
+        p, _ = _run(store, wl, empty={("COK", "GYD")})
+        assert ("COK", "GYD") in p.rt_calls
+    p, result = _run(store, wl, empty={("COK", "GYD")})
+    assert ("COK", "GYD") not in p.rt_calls
+    assert ("COK", "TBS") in p.rt_calls  # everything else still priced
+    assert result.dry_skipped >= 1
+
+
+def test_dry_route_is_rechecked_after_a_week(store):
+    wl = _multi_origin_watchlist(["GYD"])
+    for _ in range(3):
+        _run(store, wl, empty={("COK", "GYD")})
+    week_ago = (datetime.now(UTC) - timedelta(days=8)).isoformat()
+    store.conn.execute("UPDATE route_yield SET last_attempt=?", (week_ago,))
+    store.conn.commit()
+    p, _ = _run(store, wl)  # the route has data again
+    assert ("COK", "GYD") in p.rt_calls
+    row = store.conn.execute(
+        "SELECT misses_in_a_row FROM route_yield WHERE origin='COK' AND destination='GYD'"
+    ).fetchone()
+    assert row["misses_in_a_row"] == 0
+
+
+def test_one_hit_resets_the_streak(store):
+    wl = _multi_origin_watchlist(["GYD"])
+    for _ in range(2):
+        _run(store, wl, empty={("COK", "GYD")})
+    _run(store, wl)
+    for _ in range(2):
+        _run(store, wl, empty={("COK", "GYD")})
+    p, _ = _run(store, wl, empty={("COK", "GYD")})
+    assert ("COK", "GYD") in p.rt_calls  # 2 misses since the hit, not 4
+
+
+def test_failing_calls_never_mark_a_route_dry(store):
+    # An outage or a bad token must not retire every route.
+    wl = _multi_origin_watchlist(["GYD"])
+    for _ in range(5):
+        _run(store, wl, failing={("COK", "GYD")})
+    p, _ = _run(store, wl)
+    assert ("COK", "GYD") in p.rt_calls
+
+
+def test_budget_freed_by_dry_routes_prices_more_live_ones(store):
+    wl = _multi_origin_watchlist(["GYD", "TBS"])  # 10 pairs
+    dead = {(o, "GYD") for o in ("COK", "TRV", "CCJ", "BLR", "MAA")}
+    for _ in range(3):
+        p = _YieldProvider(today=TODAY, empty=dead)
+        poll(p, store, wl, today=TODAY, include_discovery=False)
+    p = _YieldProvider(today=TODAY, empty=dead)
+    poll(p, store, wl, today=TODAY, include_discovery=False, call_budget=15)  # 5 pairs' worth
+    priced = set(p.rt_calls)
+    assert priced and priced.isdisjoint(dead)
+    assert len(priced) == 5  # all five live routes, none wasted on dead ones
