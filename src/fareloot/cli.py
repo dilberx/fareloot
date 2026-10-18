@@ -355,6 +355,49 @@ def health(
 
 
 @app.command()
+def analyze(
+    notify: str = typer.Option(
+        "console", help="'console' prints everything locally; 'telegram' sends the detail there"
+    ),
+) -> None:
+    """Report where the price history comes from and which routes return data.
+
+    The public part never names a destination. The per-destination detail goes to
+    Telegram, or to the console only when not running in CI, since CI logs are public.
+    """
+    import sqlite3
+
+    from .analysis import analyse, private_report, public_report
+
+    wl = _load_watchlist()
+    if not DEFAULT_DB_PATH.exists():
+        _fail(f"no price history at {DEFAULT_DB_PATH}")
+    with sqlite3.connect(DEFAULT_DB_PATH) as conn:
+        result = analyse(conn, wl)
+    typer.echo(public_report(result))
+    detail = private_report(result)
+    if notify == "telegram":
+        settings = Settings()
+        if not settings.has_telegram:
+            _fail(
+                "Telegram is not configured - the per-destination detail has nowhere private to go"
+            )
+        from .notify.telegram import MAX_LEN, _send
+
+        chunk = ""
+        for line in detail.splitlines():
+            if len(chunk) + len(line) + 1 > MAX_LEN:
+                _send(settings.telegram_bot_token, settings.telegram_chat_id, chunk)
+                chunk = ""
+            chunk += line + "\n"
+        if chunk:
+            _send(settings.telegram_bot_token, settings.telegram_chat_id, chunk)
+        typer.echo("Per-destination detail sent to Telegram.")
+    elif not _in_ci():
+        typer.echo("\n" + detail)
+
+
+@app.command()
 def provider_check(
     origin: str = typer.Option("COK"),
     destination: str = typer.Option("DXB"),
