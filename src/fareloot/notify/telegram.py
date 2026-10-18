@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 
 from ..models import Deal
-from ..watcher import format_alert_lines
+from .message import render, render_short
 
 API = "https://api.telegram.org/bot{token}/sendMessage"
 MAX_LEN = 3800  # Telegram's limit is 4096; leave headroom for markdown escapes
@@ -17,13 +17,18 @@ class TelegramError(RuntimeError):
         self.delivered = delivered or []
 
 
-def _send(bot_token: str, chat_id: str, text: str) -> None:
+def _send(bot_token: str, chat_id: str, text: str, *, html: bool = False) -> None:
     if not bot_token or not chat_id:
         raise TelegramError("Telegram bot token or chat id is not configured")
     try:
         resp = httpx.post(
             API.format(token=bot_token),
-            json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True},
+            json={
+                "chat_id": chat_id,
+                "text": text,
+                "disable_web_page_preview": True,
+                **({"parse_mode": "HTML"} if html else {}),
+            },
             timeout=15.0,
         )
     except (httpx.HTTPError, httpx.InvalidURL) as exc:
@@ -44,9 +49,9 @@ def _pack(deals: list[Deal], marker: str) -> list[tuple[str, list[Deal]]]:
     made it impossible to say which deals a failed send had already delivered.
     """
     messages: list[tuple[str, list[Deal]]] = []
-    text, group = f"{len(deals)} steal(s) this run:", []
+    text, group = f"<b>{len(deals)} good drop(s) this run</b>", []
     for deal in deals:
-        block = "\n".join(format_alert_lines(deal, marker))
+        block = render_short(deal, marker, html=True)
         if group and len(text) + 2 + len(block) > MAX_LEN:
             messages.append((text, group))
             text, group = "(continued)", []
@@ -64,18 +69,59 @@ def send_deals(bot_token: str, chat_id: str, deals: list[Deal], marker: str = ""
     """
     jackpots = [d for d in deals if d.tier.value in ("JACKPOT", "LOOT")]
     steals = [d for d in deals if d.tier.value == "STEAL"]
-    batches = [("\n".join(format_alert_lines(d, marker)), [d]) for d in jackpots]
+    batches = [(render(d, marker, html=True), [d]) for d in jackpots]
     batches += _pack(steals, marker)
 
     delivered: list[Deal] = []
     for text, group in batches:
         try:
-            _send(bot_token, chat_id, text)
+            _send(bot_token, chat_id, text, html=True)
         except TelegramError as exc:
             raise TelegramError(str(exc), delivered) from None
         delivered += group
     return delivered
 
 
+def sample_alert() -> str:
+    """A realistic alert in the live HTML format, so a test proves Telegram accepts it.
+
+    Telegram rejects malformed HTML outright ("can't parse entities"), which would
+    otherwise only show up as a lost real alert.
+    """
+    from datetime import date, timedelta
+
+    from ..models import Origin, Quote, Reach, Tier
+
+    out = date.today() + timedelta(days=30)
+    q = Quote(
+        origin="BLR",
+        destination="DXB",
+        depart_date=out,
+        return_date=out + timedelta(days=7),
+        price_inr=11900,
+    )
+    o = Origin(
+        iata="BLR", name="Bangalore", reach=Reach(mode="overnight_train", hours=12, cost_inr=900)
+    )
+    deal = Deal(
+        quote=q,
+        origin=o,
+        hotness=88,
+        tier=Tier.LOOT,
+        baseline_inr=24800,
+        saving_inr=12800,
+        pct_below=51.6,
+        one_way_only=False,
+        reasons=[],
+        return_status="healthy",
+        live_price_inr=12100,
+        google_level="low",
+        google_typical=(19000, 26500),
+    )
+    return "<b>TEST ALERT</b>, not a real fare. This is what a deal looks like:\n\n" + render(
+        deal, html=True
+    )
+
+
 def send_test(bot_token: str, chat_id: str) -> None:
-    _send(bot_token, chat_id, "fareloot: this is a test alert. If you can read this, alerts work.")
+    _send(bot_token, chat_id, sample_alert(), html=True)

@@ -81,6 +81,13 @@ Google's `price_insights` verdict (level and typical range), shown but never use
 wishlist destinations bucketed by usable round trips, lowest-fare readiness. The public part names
 no destination; the per-destination detail goes to Telegram.
 
+Alert text lives in `notify/message.py`: one renderer, HTML for Telegram (labelled links via
+`parse_mode=HTML`, only `<b>` and `<a>`, every dynamic string escaped) and plain text elsewhere. It
+leads with place names (`places.py`, falling back to the code), the live price when confirmed,
+the train leg and door-to-door cost, and plain-language return status from `Deal.return_status`.
+No hotness numbers or z-values reach the user. `fareloot test-alert` sends a full sample in the
+live format, because Telegram rejects malformed HTML outright and a real alert would be lost.
+
 Every poll prints a closeness line (`cli._closeness`): fares scored per tier and the best hotness.
 It exists so a quiet run reads as quiet, not broken, and it never names routes.
 

@@ -60,7 +60,7 @@ def _deal(tier_name, price):
 def test_partial_send_reports_exactly_what_was_delivered(monkeypatch):
     sent = []
 
-    def flaky(token, chat, text):
+    def flaky(token, chat, text, **kw):
         if len(sent) == 1:
             raise telegram.TelegramError("Telegram API returned HTTP 502: down")
         sent.append(text)
@@ -74,7 +74,7 @@ def test_partial_send_reports_exactly_what_was_delivered(monkeypatch):
 
 def test_many_steals_are_packed_whole_never_split_mid_alert(monkeypatch):
     sent = []
-    monkeypatch.setattr(telegram, "_send", lambda token, chat, text: sent.append(text))
+    monkeypatch.setattr(telegram, "_send", lambda token, chat, text, **kw: sent.append(text))
     deals = [_deal("STEAL", 9000 + i) for i in range(60)]
     delivered = telegram.send_deals(TOKEN, "42", deals)
     assert delivered == deals
