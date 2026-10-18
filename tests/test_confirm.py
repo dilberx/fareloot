@@ -137,8 +137,10 @@ def test_confirm_alerts_splits_and_annotates(store):
     )
     assert send == [confirmed, unlisted] and dropped == [stale]
     assert confirmed.live_price_inr == 7100
-    assert "live on Google Flights: Rs 7,100" in "\n".join(format_alert_lines(confirmed))
-    assert "not live-checked: not listed on Google Flights" in "\n".join(
+    assert "Rs 7,100 per person, return, checked live on Google Flights just now" in "\n".join(
+        format_alert_lines(confirmed)
+    )
+    assert "not re-checked live (not listed on Google Flights)" in "\n".join(
         format_alert_lines(unlisted)
     )
     assert store.get_meta("live_checks:2026-11") == "3"
@@ -183,7 +185,7 @@ def test_poll_command_end_to_end_drops_stale_and_sends_confirmed(monkeypatch, tm
     from fareloot.cli import app
 
     sent: list[str] = []
-    monkeypatch.setattr(tg, "_send", lambda token, chat, text: sent.append(text))
+    monkeypatch.setattr(tg, "_send", lambda token, chat, text, **kw: sent.append(text))
 
     class HalfStale:
         """Confirms every other alert, reports the rest as having gone up 50%."""
@@ -215,7 +217,7 @@ def test_poll_command_end_to_end_drops_stale_and_sends_confirmed(monkeypatch, tm
     stale = int(summary.split("confirmed, ")[1].split()[0])
     assert confirmed > 0 and stale > 0
     text = "\n".join(sent)
-    assert text.count("live on Google Flights") == confirmed
+    assert text.count("checked live on Google Flights") == confirmed
 
     # Delivered deals and stale ones are both recorded: the stale ones so the
     # same dead cache entry doesn't spend a search again next run.
@@ -258,8 +260,8 @@ def test_confirmed_alert_shows_googles_verdict(store):
     d = _deal(7000)
     send, _ = confirm_alerts([d], f, store, monthly_cap=200, now=NOW)
     text = "\n".join(format_alert_lines(send[0]))
-    assert "live on Google Flights: Rs 7,100" in text
-    assert "Google rates it low; typical Rs 9,000-12,500" in text
+    assert "checked live on Google Flights" in text
+    assert "Google also rates this fare low (usually Rs 9,000 to 12,500)" in text
 
 
 def test_every_poll_says_how_close_it_came(monkeypatch, tmp_path):

@@ -11,7 +11,6 @@ from datetime import UTC, date, datetime
 from .baseline import robust_z
 from .config import LowestFareRule, Watchlist
 from .journey import ranking_cost_inr
-from .links import aviasales, google_flights
 from .models import Deal, Origin, Quote, Tier
 from .providers.base import Provider
 from .scoring import Scored, score
@@ -141,7 +140,13 @@ def _to_deal(
         pct_below=scored.pct_below,
         one_way_only=scored.one_way_only,
         reasons=scored.reasons,
+        return_status=_RETURN_STATUS.get(scored.gates.get("return_health"), "unchecked"),
     )
+
+
+# Gate values set in scoring.score(): 1.0 checked and healthy, 0.5 overpriced
+# return, 0.7 no priced return at all, 0.85 round trip whose return wasn't checked.
+_RETURN_STATUS = {1.0: "healthy", 0.5: "overpriced", 0.7: "one-way"}
 
 
 def _return_leg_z(
@@ -229,6 +234,7 @@ def _apply_lowest_rule(
     if q.price_inr >= low:
         return
     deal.lowest_in_window = True
+    deal.lowest_window_days = rule.window_days
     if deal.tier.rank < Tier.STEAL.rank:
         deal.tier = Tier.STEAL
     deal.reasons.insert(
@@ -563,30 +569,7 @@ def ranked_total(deal: Deal, wl: Watchlist) -> float:
 
 
 def format_alert_lines(deal: Deal, marker: str = "") -> list[str]:
-    q = deal.quote
-    lines = [f"{deal.tier.value}  {deal.hotness}   {q.origin} -> {q.destination}"]
-    if q.is_round_trip:
-        out_str = f"{q.depart_date:%d %b}"
-        back_str = f"{q.return_date:%d %b}"
-        lines.append(
-            f"round trip Rs {q.price_inr:,}  (out {out_str} / back {back_str}, {q.trip_length}d)"
-        )
-    else:
-        lines.append(f"one way Rs {q.price_inr:,}  ({q.depart_date:%d %b})")
-    if deal.live_price_inr is not None:
-        lines.append(f"  live on Google Flights: Rs {deal.live_price_inr:,}")
-        verdict = []
-        if deal.google_level:
-            verdict.append(f"Google rates it {deal.google_level}")
-        if deal.google_typical:
-            lo, hi = deal.google_typical
-            verdict.append(f"typical Rs {lo:,}-{hi:,}")
-        if verdict:
-            lines.append(f"  {'; '.join(verdict)}")
-    elif deal.live_note:
-        lines.append(f"  {deal.live_note}")
-    for reason in deal.reasons:
-        lines.append(f"  {reason}")
-    lines.append(f"  via {aviasales(q, marker)}")
-    lines.append(f"  or {google_flights(q)}")
-    return lines
+    """The alert as plain-text lines; Telegram gets the HTML form of the same text."""
+    from .notify.message import render
+
+    return render(deal, marker).splitlines()

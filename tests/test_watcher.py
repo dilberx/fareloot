@@ -181,9 +181,9 @@ def test_format_alert_lines_includes_links_and_reasons():
     lines = format_alert_lines(deal, marker="affiliate123")
     text = "\n".join(lines)
     assert "LOOT" in text
-    assert "COK -> GYD" in text
+    assert "Kochi to Baku" in text
     assert "Rs 7,500" in text
-    assert "usually Rs 18,000" in text
+    assert "the usual Rs 18,000" in text
     assert "aviasales.com" in text
     assert "marker=affiliate123" in text
     assert "google.com/travel/flights" in text
