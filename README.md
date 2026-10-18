@@ -149,6 +149,40 @@ Each run checks the next two months of departures on a 3-4 day cycle, and months
 3 to `search_horizon_months` on a slower one, about every 20 days with the
 defaults. `far_month_share` in the watchlist sets how the budget splits.
 
+Wishlist routes that keep coming back empty are skipped automatically: three
+answered checks in a row with no usable fare, and the route rests for a week
+before being tried again. Discovery still scans every origin, so nothing goes
+unwatched; the budget just stops going to routes the price source has no data
+for. `analyze` lists which routes are resting.
+
+### If the data key is lost
+
+`FARELOOT_DATA_KEY` decrypts the stored price history, and GitHub never shows a
+secret again. If the secret is deleted or overwritten, the history cannot be
+recovered by anyone, and every run aborts at the restore step rather than
+overwrite it. Reset instead:
+
+1. Create and save a new key (keep a copy in a password manager this time):
+
+   ```powershell
+   $k = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)); $k | Set-Clipboard; $k | gh secret set FARELOOT_DATA_KEY
+   ```
+
+2. Delete the old encrypted history, so restore finds nothing and starts clean:
+
+   ```bash
+   git push origin --delete fareloot-data
+   ```
+
+3. Rebuild baselines with a seed run, then let the scheduled polls take over:
+
+   ```bash
+   gh workflow run watch.yml -f mode=seed
+   ```
+
+Baselines are useful again after one to two weeks. If the key leaked but still
+works, this is the same procedure; the history is simply discarded with it.
+
 Two things about this setup are worth knowing. Scheduled runs are best-effort:
 observed cadence is closer to every 7 or 8 hours than the hourly cron requests,
 because GitHub heavily throttles `schedule` on free public repos. And the repo

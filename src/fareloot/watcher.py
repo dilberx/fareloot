@@ -22,6 +22,33 @@ CURSOR_KEY = "wishlist_cursor"
 FAR_CURSOR_KEY = "far_month_cursor"
 NEAR_MONTHS = 2
 CALLS_PER_FAR_ITEM = 2  # one round-trip month plus its reverse one-way
+# A wishlist route whose round-trip calls succeed but return nothing usable this
+# many times in a row is skipped, then re-checked once it has rested this long.
+# Measured: four small origins and five destinations returned ~6% of round
+# trips while costing ~60% of the wishlist budget.
+DRY_AFTER_MISSES = 3
+DRY_RECHECK_DAYS = 7
+
+
+def _walk(items: list, start: int, count: int, skip) -> tuple[list, int, int]:
+    """Take up to `count` items from `start`, stepping past skipped ones.
+
+    Returns (chosen, next cursor, skipped). The list itself never shrinks, so the
+    cursor keeps its meaning as routes go dry and come back.
+    """
+    chosen: list = []
+    skipped = 0
+    i = 0
+    while len(chosen) < count and i < len(items):
+        item = items[(start + i) % len(items)]
+        i += 1
+        if skip(item):
+            skipped += 1
+            continue
+        chosen.append(item)
+    return chosen, ((start + i) % len(items) if items else 0), skipped
+
+
 CALLS_PER_PAIR = 3  # two round-trip months plus one reverse one-way
 
 
@@ -76,6 +103,8 @@ class PollResult:
     calls_made: int
     errors: list[str]
     calls_ok: int = 0
+    # Wishlist route checks skipped because the route keeps returning nothing.
+    dry_skipped: int = 0
 
     @property
     def all_calls_failed(self) -> bool:
@@ -401,11 +430,22 @@ def poll(
         far_budget = int(max(0, call_budget - calls) * wl.far_month_share) if far_months else 0
     near_budget = None if call_budget is None else call_budget - far_budget
 
+    dry = store.dry_routes(misses=DRY_AFTER_MISSES, recheck_days=DRY_RECHECK_DAYS, now=run_started)
+    yields: dict[tuple[str, str], int] = {}  # usable round trips per route answered this run
+
+    def price_round_trip(o: str, d: str, month: str) -> list[Quote]:
+        errors_before = len(errors)
+        quotes = attempt(f"cheap {o}->{d}", provider.cheap, o, d, month, month)
+        if len(errors) == errors_before:
+            usable = [q for q in usable_quotes(wl, quotes, today) if q.return_date]
+            yields[(o, d)] = yields.get((o, d), 0) + len(usable)
+        return quotes
+
     pairs, start, count = _wishlist_slice(store, wl, origins, near_budget, calls)
-    for i in range(count):
-        o, d = pairs[(start + i) % len(pairs)]
+    chosen, near_cursor, skipped = _walk(pairs, start, count, lambda pair: pair in dry)
+    for o, d in chosen:
         for month in months[:NEAR_MONTHS]:
-            all_quotes += attempt(f"cheap {o}->{d}", provider.cheap, o, d, month, month)
+            all_quotes += price_round_trip(o, d, month)
         # One-way in the *return* direction, to judge whether the way back is a
         # healthy price or a trap - see _return_leg_z.
         reverse = attempt(f"reverse {d}->{o}", provider.cheap, d, o, months[0])
@@ -413,7 +453,7 @@ def poll(
         all_quotes += reverse
     # Same rule as seed: if nothing succeeded, those pairs were never priced.
     if pairs and (ok > 0 or not errors):
-        store.set_meta(CURSOR_KEY, str((start + count) % len(pairs)))
+        store.set_meta(CURSOR_KEY, str(near_cursor))
 
     # Months beyond the near ones, often where booking-ahead fares sit, rotate
     # on their own cursor with a fixed share of the budget, so they can't starve
@@ -426,15 +466,21 @@ def poll(
         else:
             far_count = min(len(far_items), far_budget // CALLS_PER_FAR_ITEM)
         far_start = int(store.get_meta(FAR_CURSOR_KEY, "0") or 0) % len(far_items)
+        far_chosen, far_cursor, far_skipped = _walk(
+            far_items, far_start, far_count, lambda item: item[:2] in dry
+        )
+        skipped += far_skipped
         ok_before, errors_before = ok, len(errors)
-        for i in range(far_count):
-            o, d, month = far_items[(far_start + i) % len(far_items)]
-            all_quotes += attempt(f"cheap {o}->{d}", provider.cheap, o, d, month, month)
+        for o, d, month in far_chosen:
+            all_quotes += price_round_trip(o, d, month)
             reverse = attempt(f"reverse {d}->{o}", provider.cheap, d, o, month)
             reverse_quotes.setdefault((o, d), []).extend(reverse)
             all_quotes += reverse
-        if far_count and (ok > ok_before or len(errors) == errors_before):
-            store.set_meta(FAR_CURSOR_KEY, str((far_start + far_count) % len(far_items)))
+        if far_chosen and (ok > ok_before or len(errors) == errors_before):
+            store.set_meta(FAR_CURSOR_KEY, str(far_cursor))
+
+    for (o, d), hits in yields.items():
+        store.record_route_yield(o, d, hits, run_started)
 
     all_quotes = usable_quotes(wl, all_quotes, today)
     recorded = store.record(all_quotes)
@@ -476,6 +522,7 @@ def poll(
         calls_made=calls_made,
         errors=errors,
         calls_ok=ok,
+        dry_skipped=skipped,
     )
 
 

@@ -156,6 +156,14 @@ Three things here are easy to break:
   from a cursor in the `meta` table each run. Walking in a fixed order instead starves every origin
   after the first few forever, including BLR and MAA. Discovery spends its calls first for the same
   reason. `test_small_budget_still_reaches_every_origin_across_runs` pins this.
+- **Dry routes are skipped, not removed** (`route_yield` table, `watcher._walk`). A wishlist route
+  whose round-trip calls succeed `DRY_AFTER_MISSES` (3) times in a row with nothing usable rests
+  for `DRY_RECHECK_DAYS` (7). Failed calls never count as misses, or an outage would retire every
+  route. `_walk` steps past dry entries without shrinking the list, so cursors keep their meaning.
+  Measured before this: four small origins and five destinations cost ~60% of the wishlist budget
+  for ~6% of usable round trips. Discovery is never skipped.
+- **Losing `FARELOOT_DATA_KEY` loses the history**: rotation needs the old key, so the README's
+  recovery is a reset (new key, delete `fareloot-data`, re-seed), not a rotation.
 - **Months 3+ rotate on their own cursor** (`FAR_CURSOR_KEY`) with `far_month_share` of the
   per-run budget; months 1-2 keep `_wishlist_slice`. Each far item fetches its own reverse month.
   Defaults: ~3.6 days per near pass, ~20 days per far month. Raising the horizon or the share

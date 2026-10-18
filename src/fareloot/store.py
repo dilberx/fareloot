@@ -51,6 +51,16 @@ CREATE TABLE IF NOT EXISTS discovered (
     last_score  INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS route_yield (
+    origin           TEXT NOT NULL,
+    destination      TEXT NOT NULL,
+    attempts         INTEGER NOT NULL DEFAULT 0,
+    misses_in_a_row  INTEGER NOT NULL DEFAULT 0,
+    last_attempt     TEXT NOT NULL,
+    last_hit         TEXT,
+    PRIMARY KEY (origin, destination)
+);
+
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -290,6 +300,38 @@ class Store:
             "SELECT destination FROM discovered ORDER BY last_score DESC LIMIT ?", (limit,)
         ).fetchall()
         return [r["destination"] for r in rows]
+
+    # -- route yield -----------------------------------------------------
+
+    def record_route_yield(self, origin: str, destination: str, hits: int, now: datetime) -> None:
+        """Note what one wishlist attempt on a route returned.
+
+        Only called when the provider answered; a failed call says nothing about
+        whether the route has data, so it must never count as a miss.
+        """
+        stamp = now.isoformat()
+        self.conn.execute(
+            """INSERT INTO route_yield
+                   (origin, destination, attempts, misses_in_a_row, last_attempt, last_hit)
+               VALUES (?, ?, 1, ?, ?, ?)
+               ON CONFLICT(origin, destination) DO UPDATE SET
+                   attempts = attempts + 1,
+                   misses_in_a_row = CASE WHEN ? > 0 THEN 0 ELSE misses_in_a_row + 1 END,
+                   last_attempt = excluded.last_attempt,
+                   last_hit = CASE WHEN ? > 0 THEN excluded.last_attempt ELSE last_hit END""",
+            (origin, destination, 0 if hits else 1, stamp, stamp if hits else None, hits, hits),
+        )
+        self.conn.commit()
+
+    def dry_routes(self, *, misses: int, recheck_days: int, now: datetime) -> set[tuple[str, str]]:
+        """Routes that keep coming back empty and aren't yet due a re-check."""
+        since = (now - timedelta(days=recheck_days)).isoformat()
+        rows = self.conn.execute(
+            """SELECT origin, destination FROM route_yield
+               WHERE misses_in_a_row >= ? AND last_attempt >= ?""",
+            (misses, since),
+        ).fetchall()
+        return {(r["origin"], r["destination"]) for r in rows}
 
     # -- meta ------------------------------------------------------------
 
