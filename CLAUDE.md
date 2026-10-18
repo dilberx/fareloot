@@ -77,6 +77,10 @@ The key is a URL query parameter, so request exceptions are re-raised without th
 the total for both legs (round trip / one way = 1.88 on COK-DXB). Confirmed alerts also carry
 Google's `price_insights` verdict (level and typical range), shown but never used as a gate.
 
+`fareloot analyze` (workflow mode `analyze`) reports where history comes from: yield per origin,
+wishlist destinations bucketed by usable round trips, lowest-fare readiness. The public part names
+no destination; the per-destination detail goes to Telegram.
+
 Every poll prints a closeness line (`cli._closeness`): fares scored per tier and the best hotness.
 It exists so a quiet run reads as quiet, not broken, and it never names routes.
 
@@ -84,7 +88,7 @@ It exists so a quiet run reads as quiet, not broken, and it never names routes.
 
 A weighted blend of five components (depth below baseline, rarity, price-per-km value, absolute
 rupees saved, reach penalty) is multiplied by three gates that can only ever pull the score *down*:
-`return_health` (the trap veto above), `confidence` (discounts thin history so a 3-sample baseline
+`return_health` (the trap veto above; a return is a trap above `RETURN_UNHEALTHY_Z` = 2.0, measured: 1.0 wrongly blocked ~15% of healthy returns), `confidence` (discounts thin history so a 3-sample baseline
 can't manufacture a jackpot), and `staleness` (discounts quotes near `expires_at`). Weights and gate
 constants live at the top of the file as named constants, not magic numbers inline.
 

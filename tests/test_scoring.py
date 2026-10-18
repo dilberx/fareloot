@@ -14,8 +14,26 @@ REACH = Reach(mode="local", hours=1, cost_inr=200)
 # 20 points: enough for scoring's confidence gate to reach full strength, which
 # matches a realistically seeded route rather than a brand-new one.
 HISTORY = [
-    20000, 21000, 19500, 20500, 20200, 19800, 20100, 19700, 20300, 20050,
-    20400, 19900, 20600, 19600, 20250, 19950, 20150, 19850, 20350, 20000,
+    20000,
+    21000,
+    19500,
+    20500,
+    20200,
+    19800,
+    20100,
+    19700,
+    20300,
+    20050,
+    20400,
+    19900,
+    20600,
+    19600,
+    20250,
+    19950,
+    20150,
+    19850,
+    20350,
+    20000,
 ]
 
 
@@ -130,3 +148,14 @@ def test_expired_quote_never_pushes():
         now=now,
     )
     assert result.tier == Tier.NONE
+
+
+def test_return_gate_threshold_is_two_robust_deviations():
+    # A return at +1.5 is within normal spread (~1 in 15 healthy fares sits that
+    # high), so the deal goes through; +2.5 is abnormal and is held back.
+    common = dict(
+        price_inr=6500, route_history=HISTORY, reach=REACH, max_reach_hours=14, is_round_trip=True
+    )
+    assert score(return_z=1.5, **common).tier.pushes
+    held = score(return_z=2.5, **common)
+    assert not held.tier.pushes and any("return" in r for r in held.reasons)
