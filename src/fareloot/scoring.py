@@ -31,7 +31,10 @@ WEIGHTS = {
 DEPTH_Z_FLOOR = 1.0  # z at which depth starts counting
 DEPTH_Z_CEIL = 4.0  # z at which depth is maxed out
 ABSOLUTE_SATURATION_INR = 15_000
-RETURN_UNHEALTHY_Z = 1.0
+# A return leg counts as a trap above this robust z. Measured on 1,680 return
+# checks: 1.0 flagged 14.8% of healthy returns (about one genuine deal in seven
+# blocked) while 2.0 flags 0.3% and still catches every planted trap (z >= +3.4).
+RETURN_UNHEALTHY_Z = 2.0
 CONFIDENCE_FULL_OBS = 20
 
 
