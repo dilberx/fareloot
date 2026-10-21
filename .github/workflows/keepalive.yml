@@ -58,7 +58,7 @@ jobs:
             fi
           done
 
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.0  # setup-uv publishes only exact version tags, no floating v10
 
       - name: Install
         run: uv sync --no-dev
