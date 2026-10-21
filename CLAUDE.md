@@ -88,7 +88,7 @@ the train leg and door-to-door cost, and plain-language return status from `Deal
 No hotness numbers or z-values reach the user. `fareloot test-alert` sends a full sample in the
 live format, because Telegram rejects malformed HTML outright and a real alert would be lost.
 
-Every poll prints a closeness line (`cli._closeness`): fares scored per tier and the best hotness.
+Every poll prints a closeness line (`cli._closeness`): fares scored per tier and the best hotness among fares that clear the price floors (or, if none do, the biggest drop). A high hotness under the floors is value, not a near miss.
 It exists so a quiet run reads as quiet, not broken, and it never names routes.
 
 ### Hotness scoring (`scoring.py`)
