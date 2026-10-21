@@ -30,7 +30,7 @@ jobs:
   poll:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Restore price history
         id: restore
@@ -87,7 +87,7 @@ jobs:
               ;;
           esac
 
-      - uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@v10
 
       - name: Install
         run: uv sync --no-dev
