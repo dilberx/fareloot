@@ -272,6 +272,7 @@ def test_every_poll_says_how_close_it_came(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     runner = CliRunner()
     runner.invoke(app, ["init"])
+    runner.invoke(app, ["seed", "--provider", "mock"])
     r = runner.invoke(app, ["poll", "--provider", "mock", "--notify", "console", "--no-discovery"])
     line = next(x for x in r.output.splitlines() if x.startswith("Scored "))
     assert "JACKPOT" in line and "Closest to an alert: hotness" in line and "STEAL needs 65" in line

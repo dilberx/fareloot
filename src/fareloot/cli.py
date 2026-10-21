@@ -115,8 +115,12 @@ def seed_range_label(start: int, done: int, total: int) -> str:
     return f"tasks {start}-{total} and 0-{end - total} of {total}"
 
 
-def _closeness(deals, steal_at: int) -> str:
+def _closeness(deals, alerts) -> str:
     """How near this run came to alerting, so a quiet run reads as quiet, not broken.
+
+    Only fares that clear the price floors can alert, so only they count as
+    close. A high hotness on a fare 2% below usual says the route is good value,
+    not that an alert was near. Fares with no baseline can't push yet either.
 
     Counts and scores only: route names in a public Actions log would reveal the
     watchlist.
@@ -127,15 +131,30 @@ def _closeness(deals, steal_at: int) -> str:
     counts = ", ".join(f"{sum(d.tier == t for d in deals)} {t.value}" for t in tiers)
     if not deals:
         return f"Scored 0 fares this run ({counts})."
-    best = max(deals, key=lambda d: d.hotness)
-    how = (
-        f"{best.pct_below:.0f}% below its usual price"
-        if best.baseline_inr
-        else "on a route with no baseline yet"
+    head = f"Scored {len(deals)} fares: {counts}."
+    judged = [d for d in deals if d.baseline_inr]
+    if not judged:
+        return f"{head} None has enough history to judge yet."
+    floors = (
+        f"{alerts.min_pct_below_baseline:.0f}% and Rs {alerts.min_saving_inr:,} "
+        "below its usual price"
     )
+    eligible = [
+        d
+        for d in judged
+        if d.pct_below >= alerts.min_pct_below_baseline and d.saving_inr >= alerts.min_saving_inr
+    ]
+    if not eligible:
+        drop = max(judged, key=lambda d: d.pct_below)
+        return (
+            f"{head} No fare was {floors}, which an alert needs; "
+            f"the biggest drop was {drop.pct_below:.0f}% (Rs {drop.saving_inr:,})."
+        )
+    best = max(eligible, key=lambda d: d.hotness)
     return (
-        f"Scored {len(deals)} fares: {counts}. Closest to an alert: hotness {best.hotness} "
-        f"({how}); STEAL needs {steal_at}."
+        f"{head} {len(eligible)} cleared the price floors ({floors}). "
+        f"Closest to an alert: hotness {best.hotness} ({best.pct_below:.0f}% below usual); "
+        f"STEAL needs {alerts.tiers.steal}."
     )
 
 
@@ -238,7 +257,7 @@ def poll_cmd(
     )
     if result.all_calls_failed:
         _fail("every provider call failed - check FARELOOT_TP_TOKEN and Travelpayouts status")
-    typer.echo(_closeness(result.deals, wl.alerts.tiers.steal))
+    typer.echo(_closeness(result.deals, wl.alerts))
     if result.dry_skipped:
         typer.echo(
             f"Skipped {result.dry_skipped} check(s) on routes that keep returning nothing; "
