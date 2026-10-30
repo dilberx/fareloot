@@ -163,6 +163,8 @@ PLACES: dict[str, str] = {
     "LAX": "Los Angeles",
     "YYZ": "Toronto",
     "YVR": "Vancouver",
+    "YUL": "Montreal",
+    "YMQ": "Montreal",
 }
 
 

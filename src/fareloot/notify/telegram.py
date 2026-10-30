@@ -92,7 +92,9 @@ def sample_alert() -> str:
 
     from ..models import Origin, Quote, Reach, Tier
 
-    out = date.today() + timedelta(days=30)
+    # Early in a month at least four days out, so the sample's other dates
+    # share its month, as real ones do.
+    out = (date.today() + timedelta(days=30)).replace(day=5)
     q = Quote(
         origin="BLR",
         destination="DXB",
@@ -117,6 +119,16 @@ def sample_alert() -> str:
         live_price_inr=12100,
         google_level="low",
         google_typical=(19000, 26500),
+        options=[
+            Quote(
+                origin="BLR",
+                destination="DXB",
+                depart_date=out + timedelta(days=d),
+                return_date=out + timedelta(days=d + n),
+                price_inr=p,
+            )
+            for d, n, p in ((3, 5, 12400), (9, 7, 12900))
+        ],
     )
     return "<b>TEST ALERT</b>, not a real fare. This is what a deal looks like:\n\n" + render(
         deal, html=True

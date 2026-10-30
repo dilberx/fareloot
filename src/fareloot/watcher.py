@@ -8,10 +8,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
-from .baseline import robust_z
+from .baseline import median, robust_z
 from .config import LowestFareRule, Watchlist
-from .journey import ranking_cost_inr
+from .geo import km
+from .journey import ranking_cost_inr, total_cost_inr, trip_window, worth_the_detour
 from .models import Deal, Origin, Quote, Tier
+from .places import place
 from .providers.base import Provider
 from .scoring import Scored, score
 from .store import Store
@@ -27,6 +29,23 @@ CALLS_PER_FAR_ITEM = 2  # one round-trip month plus its reverse one-way
 # trips while costing ~60% of the wishlist budget.
 DRY_AFTER_MISSES = 3
 DRY_RECHECK_DAYS = 7
+# Door-to-door comparison against other airports: an airport's usual price
+# counts once it has this many observations in the band, and this run's fares
+# from other airports count when they leave within this many days of the deal.
+ALT_MIN_HISTORY = 5
+ALT_DATE_WINDOW_DAYS = 3
+MAX_OPTIONS = 4
+
+
+def _distance(origin: str, destination: str, quote: Quote | None = None) -> int | None:
+    found = km(origin, destination)
+    if found is None and quote is not None:
+        return quote.distance_km
+    return found
+
+
+def _worth_it(origin: Origin, destination: str, quote: Quote | None = None) -> bool:
+    return worth_the_detour(origin.reach, _distance(origin.iata, destination, quote))
 
 
 def _walk(items: list, start: int, count: int, skip) -> tuple[list, int, int]:
@@ -83,7 +102,7 @@ def _wishlist_slice(
     and wraps around. Every pair is covered once per cycle of runs.
     """
     destinations = list(dict.fromkeys(wl.destinations + store.promoted()))
-    pairs = [(o, d) for o in origins for d in destinations if d != o]
+    pairs = [(o, d) for o in origins for d in destinations if d != o and _worth_it(origins[o], d)]
     if not pairs:
         return pairs, 0, 0
     if call_budget is None:
@@ -247,12 +266,50 @@ def _apply_lowest_rule(
 def alert_key(deal: Deal) -> tuple[int | None, str]:
     """(trip_length, depart_date) used to cool alerts down.
 
-    Lowest-fare alerts are about the route, not one departure date; keying them
-    per date would let every date that dips below the old low alert separately.
+    One alert covers a route's whole month (its other dates ride along as
+    options), so the cooldown is per month: keyed per date, every date in the
+    month would alert on its own, run after run. Lowest-fare alerts are about
+    the route, so they cool down per route.
     """
     if deal.lowest_in_window:
         return None, LOWEST_KEY
-    return deal.quote.trip_length, deal.quote.depart_date.isoformat()
+    return None, f"month:{deal.quote.depart_month}"
+
+
+def pick_leads(deals: list[Deal], wl: Watchlist) -> list[Deal]:
+    """One deal per destination and departure month, with its other dates attached.
+
+    The lead is the pushing deal that is cheapest door to door; shorter trips
+    win ties, since a long trip is the bigger commitment. Its options are the
+    cheapest other dates on the same route and month, any length in a band, so
+    the reader sees the flexible choices this run found.
+    """
+    groups: dict[tuple[str, str], list[Deal]] = {}
+    for deal in deals:
+        if deal.tier.pushes:
+            key = (deal.quote.destination, deal.quote.depart_month)
+            groups.setdefault(key, []).append(deal)
+    leads = []
+    for group in groups.values():
+        lead = min(group, key=lambda d: (ranked_total(d, wl), d.quote.trip_length or 0))
+        q = lead.quote
+        route = (q.origin, q.destination, q.depart_month)
+        seen = {(q.depart_date, q.return_date)}
+        options: list[Quote] = []
+        for other in sorted(deals, key=lambda d: d.quote.price_inr):
+            o = other.quote
+            if (o.origin, o.destination, o.depart_month) != route or not o.is_round_trip:
+                continue
+            if (o.depart_date, o.return_date) in seen:
+                continue
+            seen.add((o.depart_date, o.return_date))
+            options.append(o)
+            if len(options) == MAX_OPTIONS:
+                break
+        lead.options = options
+        leads.append(lead)
+    leads.sort(key=lambda d: (-d.tier.rank, d.quote.price_inr))
+    return leads
 
 
 def score_quotes(
@@ -276,7 +333,9 @@ def score_quotes(
     deals: list[Deal] = []
     for quote in usable_quotes(wl, quotes):
         origin = origins.get(quote.origin)
-        if origin is None:
+        # Discovery happily returns Bangalore -> Hyderabad; nobody takes an
+        # overnight train for that hop, so it is never a deal for this user.
+        if origin is None or not _worth_it(origin, quote.destination, quote):
             continue
         scored = _score_quote(store, wl, origin, quote, reverse_quotes, as_of)
         deal = _to_deal(quote, origin, scored, marker=marker)
@@ -292,8 +351,92 @@ def score_quotes(
         ):
             store.promote(quote.destination, scored.hotness)
 
+    for deal in deals:
+        if deal.tier.pushes:
+            _hold_back(store, wl, deal, deals, origins, as_of)
     deals.sort(key=lambda d: d.hotness, reverse=True)
     return deals
+
+
+def _hold_back(
+    store: Store,
+    wl: Watchlist,
+    deal: Deal,
+    deals: list[Deal],
+    origins: dict[str, Origin],
+    as_of: datetime | None,
+) -> None:
+    """Demote a pushing deal that is a good fare but a bad trip.
+
+    Scoring judges a fare against its own route. The trip is judged here: how
+    long it is for the distance, and whether getting there another way usually
+    costs less door to door.
+    """
+    q = deal.quote
+    lo, hi = trip_window(_distance(q.origin, q.destination, q))
+    if q.trip_length is not None and not lo <= q.trip_length <= hi:
+        _demote(deal, f"{q.trip_length} nights is outside {lo}-{hi} for this distance")
+        return
+    why = _cheaper_elsewhere(store, wl, deal, deals, origins, as_of)
+    if why:
+        _demote(deal, why)
+
+
+def _demote(deal: Deal, reason: str) -> None:
+    deal.tier = Tier.NONE
+    deal.lowest_in_window = False
+    deal.reasons.append(reason)
+
+
+def _cheaper_elsewhere(
+    store: Store,
+    wl: Watchlist,
+    deal: Deal,
+    deals: list[Deal],
+    origins: dict[str, Origin],
+    as_of: datetime | None,
+) -> str | None:
+    """Why another airport is the better way to this destination, or None.
+
+    A Bangalore fare 40% below Bangalore's usual is no deal if flying from
+    Kochi usually costs less once the train is counted. Two checks: other
+    airports' usual door-to-door price, and this run's fares from other
+    airports for nearly the same dates.
+    """
+    q = deal.quote
+    band = wl.band_for(q.trip_length) if q.trip_length is not None else None
+    if band is None:
+        return None
+    mine = ranked_total(deal, wl)
+    for other in origins.values():
+        if other.iata == q.origin or not _worth_it(other, q.destination):
+            continue
+        history = store.route_history(
+            other.iata, q.destination, q.trip_length, band=band, before=as_of
+        )
+        if len(history) < ALT_MIN_HISTORY:
+            continue
+        usual = int(median(history))
+        if ranking_cost_inr(usual, other.reach, wl.train_hour_value_inr) <= mine:
+            return (
+                f"flying from {place(other.iata)} usually costs less door to door "
+                f"(about Rs {total_cost_inr(usual, other.reach):,})"
+            )
+    for alt in deals:
+        a = alt.quote
+        if (
+            a.destination == q.destination
+            and a.origin != q.origin
+            and a.trip_length is not None
+            and wl.band_for(a.trip_length) == band
+            and abs((a.depart_date - q.depart_date).days) <= ALT_DATE_WINDOW_DAYS
+            and ranked_total(alt, wl) < mine
+        ):
+            return (
+                f"{place(a.origin)} is cheaper door to door for nearly the same dates "
+                f"(Rs {alt.total_inr:,})"
+            )
+    return None
 
 
 SEED_CURSOR_KEY = "seed_cursor"
@@ -346,7 +489,13 @@ def seed(
         # A filtered run has its own task list, so it gets its own cursor and
         # leaves the full cycle's position untouched.
         cursor_key = f"{SEED_CURSOR_KEY}:{','.join(sorted(wanted))}"
-    tasks = [(o, d, m) for o in origins for d in destinations if d != o for m in months]
+    tasks = [
+        (o, d, m)
+        for o in origins
+        for d in destinations
+        if d != o and _worth_it(origins[o], d)
+        for m in months
+    ]
     if not tasks:
         return SeedResult(0, 0, 0, 0, 0, False, [])
 
@@ -497,11 +646,9 @@ def poll(
     to_alert = []
     a = wl.alerts
     lowest_routes: set[tuple[str, str]] = set()
-    # Cheapest first, so if several departure dates of one route are all a new
-    # low this run, the one alert sent is the cheapest of them.
-    for deal in sorted(deals, key=lambda d: (-d.tier.rank, d.quote.price_inr)):
-        if not deal.tier.pushes:
-            continue
+    # Leads come cheapest first, so if several months of one route are all a
+    # new low this run, the one lowest-fare alert sent is the cheapest of them.
+    for deal in pick_leads(deals, wl):
         route = (deal.quote.origin, deal.quote.destination)
         if deal.lowest_in_window and route in lowest_routes:
             continue

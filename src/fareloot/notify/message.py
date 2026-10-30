@@ -41,6 +41,20 @@ def _dates(deal: Deal) -> str:
     return f"Out {q.depart_date:%a %d %b}, back {q.return_date:%a %d %b} ({q.trip_length} nights)"
 
 
+def _options(deal: Deal) -> list[str]:
+    """The route's other dates this month, so a fixed date pair isn't the only choice."""
+    if not deal.options:
+        return []
+    q = deal.quote
+    lines = [f"Other dates from {place(q.origin)} in {q.depart_date:%B}:"]
+    for o in deal.options:
+        lines.append(
+            f"- {o.depart_date:%a %d %b} to {o.return_date:%a %d %b}, "
+            f"{o.trip_length} nights: Rs {o.price_inr:,}"
+        )
+    return lines
+
+
 def _links(deal: Deal, marker: str, html: bool) -> str:
     g, a = google_flights(deal.quote), aviasales(deal.quote, marker)
     if html:
@@ -104,6 +118,9 @@ def render(deal: Deal, marker: str = "", *, html: bool = False) -> str:
             verdict += f" (usually Rs {lo:,} to {hi:,})"
         lines.append(verdict)
 
+    if deal.options:
+        lines += ["", *_options(deal)]
+
     body = [esc(line) for line in lines[1:]]
     out = [lines[0], *body, "", _links(deal, marker, html)]
     if deal.tier in (Tier.JACKPOT, Tier.LOOT):
@@ -126,5 +143,8 @@ def render_short(deal: Deal, marker: str = "", *, html: bool = False) -> str:
         when += ". Not re-checked live"
     else:
         when += ". Price checked live on Google Flights"
+    if deal.options:
+        cheapest = min(o.price_inr for o in deal.options)
+        when += f". {len(deal.options)} other dates this month from Rs {cheapest:,}"
     first = f"<b>{esc(head)}</b>" if html else head
     return "\n".join([first, esc(when), _links(deal, marker, html)])

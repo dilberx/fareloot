@@ -16,6 +16,7 @@ import random
 from calendar import monthrange
 from datetime import UTC, date, datetime, timedelta
 
+from ..geo import km
 from ..models import Quote
 
 INR_PER_KM = 4.5
@@ -41,6 +42,11 @@ def _rng(*parts: object) -> random.Random:
 
 
 def _distance_km(origin: str, destination: str) -> int:
+    # Real distances where known, so airports compare the way they would on real
+    # fares: random ones made Madurai to Kuala Lumpur a third of Kochi's price.
+    real = km(origin, destination)
+    if real is not None:
+        return max(400, real)
     pair = "".join(sorted([origin, destination]))
     return 400 + _rng("dist", pair).randrange(0, 7600)
 

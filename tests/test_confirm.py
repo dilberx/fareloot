@@ -198,6 +198,11 @@ def test_poll_command_end_to_end_drops_stale_and_sends_confirmed(monkeypatch, tm
             return q.price_inr + 100 if self.n % 2 else int(q.price_inr * 1.5)
 
     monkeypatch.setattr(confirm_mod, "SerpApiFlights", HalfStale)
+    # One alert per route-month, so a second crashed route guarantees there are
+    # enough alerts for HalfStale to confirm some and drop others.
+    import fareloot.providers.mock as mock
+
+    monkeypatch.setitem(mock.CRASHES, ("COK", "KUL"), 0.45)
     monkeypatch.chdir(tmp_path)
     for k, v in {
         "FARELOOT_TELEGRAM_BOT_TOKEN": "t",
