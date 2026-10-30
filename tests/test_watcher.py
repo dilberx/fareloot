@@ -248,9 +248,10 @@ class _RecordingProvider(MockProvider):
 
 
 def test_small_budget_still_reaches_every_origin_across_runs(store):
-    # 5 origins x 4 destinations = 20 pairs, but a budget that only fits 3 per run.
-    # The old fixed-order loop priced the first origin forever and never reached
-    # BLR or MAA, the overnight-train airports the reach ranking exists for.
+    # 5 origins x 4 destinations = 20 pairs, less three where the overnight train
+    # takes over three times as long as the flight (BLR and MAA to Bangkok, MAA
+    # to Dubai), and a budget that only fits 3 per run. The old fixed-order loop
+    # priced the first origin forever and never reached BLR or MAA.
     wl = _multi_origin_watchlist(["GYD", "TBS", "BKK", "DXB"])
     today = date(2026, 11, 1)
     covered: set[tuple[str, str]] = set()
@@ -260,7 +261,8 @@ def test_small_budget_still_reaches_every_origin_across_runs(store):
         covered |= p.priced
     origins_reached = {o for o, _ in covered}
     assert origins_reached == {"COK", "TRV", "CCJ", "BLR", "MAA"}
-    assert len(covered) == 20
+    assert len(covered) == 17
+    assert not covered & {("BLR", "BKK"), ("MAA", "BKK"), ("MAA", "DXB")}
 
 
 def test_cursor_wraps_and_never_repeats_within_a_cycle(store):
@@ -391,10 +393,12 @@ def test_undelivered_alerts_are_not_suppressed_next_run(store):
 
     first = poll(provider, store, wl, today=today)
     assert first.to_alert
-    # ...and the send fails, so nothing is recorded. Every deal that still
+    # ...and the send fails, so nothing is recorded. Every route-month that still
     # qualifies next run must alert again; none may be held back by a cooldown.
     second = poll(provider, store, wl, today=today)
-    still_qualifying = [d for d in second.deals if d.tier.pushes]
+    still_qualifying = {
+        (d.quote.destination, d.quote.depart_month) for d in second.deals if d.tier.pushes
+    }
     assert still_qualifying
     assert len(second.to_alert) == len(still_qualifying)
 
@@ -455,8 +459,9 @@ def test_seed_can_target_new_destinations_without_moving_the_main_cursor(store):
     store.set_meta("seed_cursor", "7")
     p = _SeedRecordingProvider(today=today)
     r = seed(p, store, wl, today=today, call_budget=1000, only=["shj", "rkt"])
-    # 5 origins x 2 destinations x 2 months, each seeded in both directions.
-    assert r.tasks_total == 20 and r.cycle_completed
+    # 5 origins x 2 destinations x 2 months, each seeded in both directions, less
+    # Chennai: 14 hours of train for a 4.5-hour flight isn't a trip worth seeding.
+    assert r.tasks_total == 16 and r.cycle_completed
     assert {d for _, d, _ in p.matrices if d not in {"COK", "TRV", "CCJ", "BLR", "MAA"}} == {
         "SHJ",
         "RKT",

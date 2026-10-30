@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum
 
@@ -107,6 +107,10 @@ class Deal:
     # Google's verdict on the live price: informational, never a gate.
     google_level: str = ""
     google_typical: tuple[int, int] | None = None
+    # Other dates on the same route and month, cheapest first, set on the one
+    # deal per route-month that is sent. Lets a long or awkward lead show the
+    # shorter or cheaper trips the run also saw.
+    options: list[Quote] = field(default_factory=list)
 
     @property
     def total_inr(self) -> int:

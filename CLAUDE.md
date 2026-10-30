@@ -126,6 +126,30 @@ single unconfirmed discovery quote.
 2×hours×train_hour_value_inr` — the time penalty exists purely to keep ordering honest (a ₹400
 saving shouldn't win against a 28-hour round trip on rail) and is never shown as real money.
 
+### A good fare is not always a good trip (`geo.py`, `journey.py`, `watcher._hold_back`)
+
+Scoring judges a fare against its own route; the watcher then judges the trip. A user pushed back
+on two real alerts: an overnight train to Bangalore for a flight to Hyderabad, and a 15-night
+Montreal trip when shorter ones were cheaper. Four rules came out of it, each pinned in
+`tests/test_trips.py`:
+
+- **No pointless detours** (`journey.worth_the_detour`). A train longer than `DETOUR_FREE_HOURS`
+  (5h) is only worth it if it is at most `DETOUR_MAX_RATIO` (3x) the flight time, estimated from
+  `geo.km`. Such pairs are never priced or seeded, and discovery quotes for them are never scored.
+- **Beat every other airport door to door** (`_cheaper_elsewhere`). A pushing deal is demoted if
+  another airport's usual price (median, `ALT_MIN_HISTORY` samples) or this run's fare for nearly
+  the same dates is cheaper once its train fare and hours are added.
+- **Trip length fits the distance** (`journey.trip_window`): 3-6 nights under 1,500 km, 3-10
+  under 5,000, 7-14 beyond. Longer trips are still recorded and scored, and can appear as options,
+  but never lead an alert.
+- **One alert per destination and month** (`pick_leads`). The lead is cheapest door to door,
+  shorter trips winning ties; up to `MAX_OPTIONS` other dates on its route and month ride along.
+  The cooldown key is the month (`alert_key`), so the other dates don't alert separately later.
+
+`geo.COORDS` must cover every code in `places.PLACES` (a test enforces it). `MockProvider` uses
+real distances where known; random ones made other airports look absurdly cheap and tripped the
+door-to-door rule on every scripted crash.
+
 ### Dedup is calendar-day, not timestamp (`store.py`)
 
 `observations` dedups on `(route, price, observed_date)` — the *date*, not the full timestamp.
