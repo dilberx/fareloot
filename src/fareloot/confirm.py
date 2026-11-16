@@ -7,21 +7,32 @@ few to scan with, enough to confirm the rare deals worth sending.
 
 Any failure of the checker leaves an alert unconfirmed, never dropped. Only a
 live price clearly above the cached one drops it.
+
+A confirmed alert also gets a few other trip lengths priced live from the same
+departure date. Measured on live data, Travelpayouts caches zero to three round
+trips a year on most of these routes, so the cache alone can rarely offer a
+second length; Google can price any. Those searches are optional and stop when
+the month's usage runs ahead of an even pace.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
+from calendar import monthrange
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
 
-from .models import Deal, Quote
+from .geo import km
+from .journey import trip_menu
+from .models import Deal, Quote, Tier
 from .store import Store
 
 URL = "https://serpapi.com/search"
 STALE_TOLERANCE = 0.10
+# Other trip lengths priced live for each confirmed alert; each is one search.
+LIVE_LENGTHS_PER_ALERT = 2
 NO_RESULTS = "hasn't returned any results"
 
 
@@ -150,6 +161,56 @@ def _usage_key(now: datetime) -> str:
     return f"live_checks:{now:%Y-%m}"
 
 
+def on_pace(used: int, monthly_cap: int, now: datetime) -> bool:
+    """Whether optional searches may still be spent this month.
+
+    They stop once usage is ahead of an even spend across the month, so they
+    can never starve the checks that decide whether an alert is real.
+    """
+    days = monthrange(now.year, now.month)[1]
+    return used < monthly_cap * now.day / days
+
+
+def other_lengths(q: Quote) -> list[int]:
+    """Trip lengths worth pricing next to this one, nearest first.
+
+    The middle of every other length group the distance suits.
+    """
+    if q.trip_length is None:
+        return []
+    menu = trip_menu(km(q.origin, q.destination) or q.distance_km)
+    mids = [(lo + hi) // 2 for lo, hi in menu if not lo <= q.trip_length <= hi]
+    return sorted(mids, key=lambda n: abs(n - q.trip_length))
+
+
+def _live_option(deal: Deal, q: Quote, live: LivePrice) -> Deal:
+    return Deal(
+        quote=replace(q, price_inr=live.price),
+        origin=deal.origin,
+        hotness=0,
+        tier=Tier.NONE,
+        baseline_inr=None,
+        saving_inr=0,
+        pct_below=0.0,
+        one_way_only=False,
+        reasons=[],
+        live_price_inr=live.price,
+    )
+
+
+def _merge_live(deal: Deal, live: list[Deal]) -> None:
+    """Live lengths replace cached options in the same length group."""
+    q = deal.quote
+    menu = trip_menu(km(q.origin, q.destination) or q.distance_km)
+
+    def group(n: int) -> tuple[int, int] | int:
+        return next(((lo, hi) for lo, hi in menu if lo <= n <= hi), n)
+
+    taken = {group(o.quote.trip_length) for o in live}
+    kept = [o for o in deal.options if group(o.quote.trip_length) not in taken]
+    deal.options = sorted(kept + live, key=lambda o: o.quote.trip_length)
+
+
 def confirm_alerts(
     deals: list[Deal],
     confirmer: SerpApiFlights | None,
@@ -157,6 +218,7 @@ def confirm_alerts(
     *,
     monthly_cap: int,
     now: datetime,
+    extra_lengths: int = 0,
 ) -> tuple[list[Deal], list[Deal]]:
     """Split alerts into (send, stale), annotating each deal with what was found.
 
@@ -166,6 +228,10 @@ def confirm_alerts(
     A stale lead hands over to its alternates in order, so one dead cache entry
     doesn't cost the route its alert. The first that isn't stale is sent, with
     the dates found gone removed from its options.
+
+    With `extra_lengths`, a confirmed alert gets up to that many other trip
+    lengths priced live from its departure date, while the month is on pace.
+    A failed or empty extra search costs the alert nothing but that line.
     """
     send: list[Deal] = []
     stale: list[Deal] = []
@@ -174,6 +240,7 @@ def confirm_alerts(
     for lead in deals:
         gone: list[Deal] = []
         for deal in (lead, *lead.alternates):
+            confirmed = False
             if confirmer is None:
                 deal.live_note = "not live-checked: no SerpApi key configured"
             elif used >= monthly_cap:
@@ -193,6 +260,7 @@ def confirm_alerts(
                     deal.live_price_inr = result.live_price
                     deal.google_level = result.google_level
                     deal.google_typical = result.google_typical
+                    confirmed = True
                 else:
                     deal.live_note = f"not live-checked: {result.note}"
             dead = {(g.quote.depart_date, g.quote.return_date) for g in gone}
@@ -200,6 +268,24 @@ def confirm_alerts(
                 o for o in deal.options if (o.quote.depart_date, o.quote.return_date) not in dead
             ]
             send.append(deal)
+            if confirmed:
+                live: list[Deal] = []
+                for nights in other_lengths(deal.quote)[:extra_lengths]:
+                    if used >= monthly_cap or not on_pace(used, monthly_cap, now):
+                        break
+                    q = replace(
+                        deal.quote, return_date=deal.quote.depart_date + timedelta(days=nights)
+                    )
+                    used += 1
+                    store.set_meta(key, str(used))
+                    try:
+                        found = _live(confirmer, q)
+                    except ConfirmError:
+                        continue
+                    if found is not None:
+                        live.append(_live_option(deal, q, found))
+                if live:
+                    _merge_live(deal, live)
             break
         stale += gone
     return send, stale

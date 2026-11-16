@@ -150,8 +150,16 @@ Montreal trip when shorter ones were cheaper. Four rules came out of it, each pi
   Options are the cheapest fare in each length group the distance suits, skipping the lead's
   group; the last group runs past `trip_window`, so a longer stay is offered but never leads.
   Each line shows how it compares with the usual price for trips that long and, in HTML, links
-  to its own dates. A route with one length group still gets `MIN_OPTIONS` other dates. Only
-  the lead is live-checked, and the alert says so.
+  to its own dates. A route with one length group still gets `MIN_OPTIONS` other dates.
+- **Other lengths are priced live, because the cache can't supply them.** Measured on live data:
+  the per-route endpoints (v3, v1, `latest` with a destination) return 0-3 round trips a *year*
+  on these routes, and dropping or shifting `return_at` changes nothing, so there is rarely a
+  second cached length to offer. A confirmed alert gets `LIVE_LENGTHS_PER_ALERT` (2) other
+  lengths priced on Google Flights from its own departure date (`confirm.other_lengths`), shown
+  against the lead's price and replacing any cached option in the same group. These searches
+  are optional: they stop when usage is ahead of an even monthly pace (`confirm.on_pace`), and
+  a failed one costs only its line. One broad `latest` call per origin, by contrast, returned
+  38-105 round trips; most of what a run records comes from discovery, not the wishlist calls.
 - **A fare found gone cools only its own date** (`stale_key`, `record_stale`). Recorded under the
   month key, one dead cache entry silenced its whole route-month and then led again after the
   cooldown, since a lingering old low is usually the cheapest fare cached. Measured in one week:

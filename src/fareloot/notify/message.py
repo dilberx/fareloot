@@ -49,12 +49,21 @@ def _vs_usual(option: Deal) -> str:
     return ", about the usual price"
 
 
+def _vs_lead(option: Deal, deal: Deal) -> str:
+    diff = option.quote.price_inr - _price(deal)
+    nights = f"{deal.quote.trip_length} nights"
+    if diff == 0:
+        return f", live price (same as {nights})"
+    return f", live price (Rs {abs(diff):,} {'more' if diff > 0 else 'less'} than {nights})"
+
+
 def _options(deal: Deal, html: bool) -> list[str]:
     """The same route at other trip lengths, so one length isn't the only choice.
 
-    Each line says how its price compares with the usual for trips that long,
-    because a longer stay next to a deal is often just a normal fare. Lines
-    come back already escaped: in HTML the dates are a Google Flights link.
+    A line priced live says what it costs next to the lead. A cached line says
+    how it compares with the usual for trips that long, because a longer stay
+    next to a deal is often just a normal fare. Lines come back already
+    escaped: in HTML the dates are a Google Flights link.
     """
     if not deal.options:
         return []
@@ -69,9 +78,22 @@ def _options(deal: Deal, html: bool) -> list[str]:
         lines.append(
             esc(f"- {o.trip_length} nights, ")
             + dates
-            + esc(f": Rs {o.price_inr:,}{_vs_usual(option)}")
+            + esc(
+                f": Rs {o.price_inr:,}"
+                + (
+                    _vs_lead(option, deal)
+                    if option.live_price_inr is not None
+                    else _vs_usual(option)
+                )
+            )
         )
-    lines.append(esc("These were seen in the last few hours and not re-checked live."))
+    cached = [o for o in deal.options if o.live_price_inr is None]
+    if cached and len(cached) < len(deal.options):
+        lines.append(
+            esc("Prices not marked live were seen in the last few hours and not re-checked.")
+        )
+    elif cached:
+        lines.append(esc("These were seen in the last few hours and not re-checked live."))
     return lines
 
 

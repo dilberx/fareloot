@@ -319,3 +319,109 @@ def test_stale_fare_cools_only_its_own_date_not_the_route_month(store):
 
 def _key(deal):
     return deal.quote.depart_date, deal.quote.return_date
+
+
+class _LiveByNights:
+    """Live prices scripted by trip length; a missing length isn't listed."""
+
+    def __init__(self, prices, fail=()):
+        self.prices, self.fail, self.asked = prices, set(fail), []
+
+    def live_price(self, q):
+        from fareloot.confirm import ConfirmError
+
+        self.asked.append(q.trip_length)
+        if q.trip_length in self.fail:
+            raise ConfirmError("SerpApi returned HTTP 500")
+        return self.prices.get(q.trip_length)
+
+
+MID_MONTH = datetime(2026, 11, 15, tzinfo=UTC)
+
+
+def _hong_kong_lead(options=()):
+    lead = _deal(_q("COK", "HKG", 18400, date(2026, 12, 10), 4))
+    lead.options = list(options)
+    return lead
+
+
+def test_confirmed_alert_gets_other_trip_lengths_priced_live(store):
+    # The Hong Kong complaint: the cache held one 4-night fare, so there was
+    # nothing to offer beside it. Google can price any length.
+    from fareloot.confirm import confirm_alerts, other_lengths
+
+    lead = _hong_kong_lead()
+    # The middle of each other length group, nearest first.
+    assert other_lengths(lead.quote) == [6, 9, 12]
+
+    live = _LiveByNights({4: 18500, 6: 19900, 9: 17900})
+    [sent], stale = confirm_alerts(
+        [lead], live, store, monthly_cap=200, now=MID_MONTH, extra_lengths=2
+    )
+    assert stale == [] and live.asked == [4, 6, 9]
+    assert [(o.quote.trip_length, o.quote.price_inr) for o in sent.options] == [
+        (6, 19900),
+        (9, 17900),
+    ]
+    # Same departure date as the lead, so the dates are bookable as shown.
+    assert {o.quote.depart_date for o in sent.options} == {date(2026, 12, 10)}
+    assert store.get_meta("live_checks:2026-11") == "3"
+
+    text = render(sent)
+    assert "- 6 nights, Thu 10 Dec to Wed 16 Dec: Rs 19,900, live price" in text
+    assert "(Rs 1,400 more than 4 nights)" in text
+    assert "(Rs 600 less than 4 nights)" in text
+    assert "not re-checked" not in text.split("Other trip lengths")[1]
+
+
+def test_extra_lengths_stop_when_the_month_is_ahead_of_pace(store):
+    from fareloot.confirm import confirm_alerts, on_pace
+
+    assert on_pace(99, 200, MID_MONTH) and not on_pace(100, 200, MID_MONTH)
+    # 100 of 200 used by the 15th of a 30-day month: the lead is still checked,
+    # the optional lengths are not.
+    store.set_meta("live_checks:2026-11", "100")
+    live = _LiveByNights({4: 18400, 6: 19900})
+    [sent], _ = confirm_alerts(
+        [_hong_kong_lead()], live, store, monthly_cap=200, now=MID_MONTH, extra_lengths=2
+    )
+    assert live.asked == [4] and sent.live_price_inr == 18400 and sent.options == []
+
+
+def test_unconfirmed_alert_spends_no_extra_searches(store):
+    from fareloot.confirm import confirm_alerts
+
+    live = _LiveByNights({6: 19900})  # the lead itself isn't listed on Google
+    [sent], _ = confirm_alerts(
+        [_hong_kong_lead()], live, store, monthly_cap=200, now=MID_MONTH, extra_lengths=2
+    )
+    assert live.asked == [4] and sent.options == []
+
+
+def test_failed_or_empty_extra_search_never_costs_the_alert(store):
+    from fareloot.confirm import confirm_alerts
+
+    live = _LiveByNights({4: 18400}, fail={6})  # 6 nights errors, 3 isn't listed
+    [sent], stale = confirm_alerts(
+        [_hong_kong_lead()], live, store, monthly_cap=200, now=MID_MONTH, extra_lengths=2
+    )
+    assert stale == [] and sent.live_price_inr == 18400 and sent.options == []
+    assert store.get_meta("live_checks:2026-11") == "3"  # spent searches are still counted
+
+
+def test_live_length_replaces_the_cached_one_in_its_group_and_keeps_the_rest(store):
+    from fareloot.confirm import confirm_alerts
+
+    cached = [
+        _deal(_q("COK", "HKG", 19000, date(2026, 12, 2), 7), tier=Tier.NONE),
+        _deal(_q("COK", "HKG", 19800, date(2026, 12, 3), 13), tier=Tier.NONE),
+    ]
+    live = _LiveByNights({4: 18400, 6: 19900})
+    [sent], _ = confirm_alerts(
+        [_hong_kong_lead(cached)], live, store, monthly_cap=200, now=MID_MONTH, extra_lengths=2
+    )
+    assert [(o.quote.trip_length, o.live_price_inr) for o in sent.options] == [
+        (6, 19900),
+        (13, None),
+    ]
+    assert "Prices not marked live were seen in the last few hours" in render(sent)

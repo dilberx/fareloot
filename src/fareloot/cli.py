@@ -270,7 +270,7 @@ def poll_cmd(
         render(result.deals, wl)
         delivered = result.to_alert
     else:
-        from .confirm import SerpApiFlights, confirm_alerts
+        from .confirm import LIVE_LENGTHS_PER_ALERT, SerpApiFlights, confirm_alerts
         from .notify.telegram import TelegramError, send_deals
 
         to_send = result.to_alert
@@ -283,6 +283,7 @@ def poll_cmd(
                     store,
                     monthly_cap=settings.serpapi_monthly_cap,
                     now=datetime.now(UTC),
+                    extra_lengths=LIVE_LENGTHS_PER_ALERT,
                 )
                 # A fare that is gone live is handled, not lost: cool that date
                 # down so the same stale cache entry doesn't spend a search every
@@ -293,6 +294,9 @@ def poll_cmd(
                 f"Live check: {confirmed} confirmed, {len(stale)} dropped as stale, "
                 f"{len(to_send) - confirmed} sent unconfirmed."
             )
+            extra = sum(1 for d in to_send for o in d.options if o.live_price_inr is not None)
+            if extra:
+                typer.echo(f"Priced {extra} other trip length(s) live.")
         try:
             delivered = send_deals(
                 settings.telegram_bot_token,
