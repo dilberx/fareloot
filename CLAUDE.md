@@ -143,8 +143,15 @@ Montreal trip when shorter ones were cheaper. Four rules came out of it, each pi
   under 5,000, 7-14 beyond. Longer trips are still recorded and scored, and can appear as options,
   but never lead an alert.
 - **One alert per destination and month** (`pick_leads`). The lead is cheapest door to door,
-  shorter trips winning ties; up to `MAX_OPTIONS` other dates on its route and month ride along.
-  The cooldown key is the month (`alert_key`), so the other dates don't alert separately later.
+  shorter trips winning ties. The cooldown key is the month (`alert_key`), so its other dates
+  don't alert separately later.
+- **Every alert carries a menu of other trip lengths** (`journey.trip_menu`, `Deal.options`).
+  The same user got a 15-night lead, then a 4-night one, and wanted neither as the only choice.
+  Options are the cheapest fare in each length group the distance suits, skipping the lead's
+  group; the last group runs past `trip_window`, so a longer stay is offered but never leads.
+  Each line shows how it compares with the usual price for trips that long and, in HTML, links
+  to its own dates. A route with one length group still gets `MIN_OPTIONS` other dates. Only
+  the lead is live-checked, and the alert says so.
 - **A fare found gone cools only its own date** (`stale_key`, `record_stale`). Recorded under the
   month key, one dead cache entry silenced its whole route-month and then led again after the
   cooldown, since a lingering old low is usually the cheapest fare cached. Measured in one week:

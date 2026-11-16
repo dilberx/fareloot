@@ -11,7 +11,13 @@ from datetime import UTC, date, datetime
 from .baseline import median, robust_z
 from .config import LowestFareRule, Watchlist
 from .geo import km
-from .journey import ranking_cost_inr, total_cost_inr, trip_window, worth_the_detour
+from .journey import (
+    ranking_cost_inr,
+    total_cost_inr,
+    trip_menu,
+    trip_window,
+    worth_the_detour,
+)
 from .models import Deal, Origin, Quote, Tier
 from .places import place
 from .providers.base import Provider
@@ -34,7 +40,9 @@ DRY_RECHECK_DAYS = 7
 # from other airports count when they leave within this many days of the deal.
 ALT_MIN_HISTORY = 5
 ALT_DATE_WINDOW_DAYS = 3
-MAX_OPTIONS = 4
+# An alert whose route has fares in only one length group still shows this many
+# other dates, so there is always some choice.
+MIN_OPTIONS = 2
 # Next-best deals a lead brings along in case the live check finds it gone.
 # Each one tried costs a SerpApi search.
 MAX_FALLBACKS = 2
@@ -297,9 +305,10 @@ def pick_leads(deals: list[Deal], wl: Watchlist, cooled: frozenset = frozenset()
     """One deal per destination and departure month, with its other dates attached.
 
     The lead is the pushing deal that is cheapest door to door; shorter trips
-    win ties, since a long trip is the bigger commitment. Its options are the
-    cheapest other dates on the same route and month, any length in a band, so
-    the reader sees the flexible choices this run found. The next-best deals
+    win ties, since a long trip is the bigger commitment. Its options are a
+    menu of other trip lengths on the same route and month: the cheapest fare
+    in each length group the distance suits (`journey.trip_menu`), so neither a
+    4-night nor a 15-night lead is the only choice. The next-best deals
     ride along as alternates, to lead if the live check finds the lead gone.
     `cooled` holds trips (see `_trip`) recently found gone; they neither lead
     nor appear as options.
@@ -312,20 +321,31 @@ def pick_leads(deals: list[Deal], wl: Watchlist, cooled: frozenset = frozenset()
             groups.setdefault(key, []).append(deal)
     by_price = sorted(live, key=lambda d: d.quote.price_inr)
 
-    def options_for(q: Quote) -> list[Quote]:
+    def options_for(q: Quote) -> list[Deal]:
         route = (q.origin, q.destination, q.depart_month)
-        seen = {(q.depart_date, q.return_date)}
-        options: list[Quote] = []
-        for other in by_price:
-            o = other.quote
-            if (o.origin, o.destination, o.depart_month) != route or not o.is_round_trip:
+        same_route = [
+            d
+            for d in by_price
+            if (d.quote.origin, d.quote.destination, d.quote.depart_month) == route
+            and d.quote.is_round_trip
+            and _trip(d.quote) != _trip(q)
+        ]
+        options: list[Deal] = []
+        for lo, hi in trip_menu(_distance(q.origin, q.destination, q)):
+            if q.trip_length is not None and lo <= q.trip_length <= hi:
                 continue
-            if (o.depart_date, o.return_date) in seen:
-                continue
-            seen.add((o.depart_date, o.return_date))
-            options.append(o)
-            if len(options) == MAX_OPTIONS:
+            cheapest = next((d for d in same_route if lo <= d.quote.trip_length <= hi), None)
+            if cheapest is not None:
+                options.append(cheapest)
+        # Every fare in one length group: offer other dates, cheapest first.
+        chosen = {_trip(d.quote) for d in options}
+        for d in same_route:
+            if len(options) >= MIN_OPTIONS:
                 break
+            if _trip(d.quote) not in chosen:
+                chosen.add(_trip(d.quote))
+                options.append(d)
+        options.sort(key=lambda d: (d.quote.trip_length, d.quote.price_inr))
         return options
 
     leads = []

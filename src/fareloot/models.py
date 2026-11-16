@@ -107,10 +107,10 @@ class Deal:
     # Google's verdict on the live price: informational, never a gate.
     google_level: str = ""
     google_typical: tuple[int, int] | None = None
-    # Other dates on the same route and month, cheapest first, set on the one
-    # deal per route-month that is sent. Lets a long or awkward lead show the
-    # shorter or cheaper trips the run also saw.
-    options: list[Quote] = field(default_factory=list)
+    # The same route and month at other trip lengths, shortest first: the
+    # cheapest fare in each length group the distance suits. Set on the one deal
+    # per route-month that is sent, so its length is never the only choice.
+    options: list[Deal] = field(default_factory=list)
     # Next-best deals for the same destination and month, tried in order if the
     # live check finds this one gone.
     alternates: list[Deal] = field(default_factory=list)

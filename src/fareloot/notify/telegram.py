@@ -120,14 +120,28 @@ def sample_alert() -> str:
         google_level="low",
         google_typical=(19000, 26500),
         options=[
-            Quote(
-                origin="BLR",
-                destination="DXB",
-                depart_date=out + timedelta(days=d),
-                return_date=out + timedelta(days=d + n),
-                price_inr=p,
+            Deal(
+                quote=Quote(
+                    origin="BLR",
+                    destination="DXB",
+                    depart_date=out + timedelta(days=d),
+                    return_date=out + timedelta(days=d + n),
+                    price_inr=p,
+                ),
+                origin=o,
+                hotness=0,
+                tier=Tier.NONE,
+                baseline_inr=usual,
+                saving_inr=max(0, usual - p),
+                pct_below=max(0, usual - p) / usual * 100,
+                one_way_only=False,
+                reasons=[],
             )
-            for d, n, p in ((3, 5, 12400), (9, 7, 12900))
+            for d, n, p, usual in (
+                (3, 4, 11200, 23900),
+                (9, 9, 15900, 25400),
+                (1, 13, 26800, 27100),
+            )
         ],
     )
     return "<b>TEST ALERT</b>, not a real fare. This is what a deal looks like:\n\n" + render(
