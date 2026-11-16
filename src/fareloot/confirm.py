@@ -162,33 +162,42 @@ def confirm_alerts(
 
     Searches are counted per calendar month so the free tier is never exceeded;
     once the cap is reached, alerts go out unconfirmed instead of being held.
+
+    A stale lead hands over to its alternates in order, so one dead cache entry
+    doesn't cost the route its alert. The first that isn't stale is sent, with
+    the dates found gone removed from its options.
     """
     send: list[Deal] = []
     stale: list[Deal] = []
     key = _usage_key(now)
     used = int(store.get_meta(key, "0") or 0)
-    for deal in deals:
-        if confirmer is None:
-            deal.live_note = "not live-checked: no SerpApi key configured"
+    for lead in deals:
+        gone: list[Deal] = []
+        for deal in (lead, *lead.alternates):
+            if confirmer is None:
+                deal.live_note = "not live-checked: no SerpApi key configured"
+            elif used >= monthly_cap:
+                deal.live_note = (
+                    f"not live-checked: monthly limit of {monthly_cap} searches reached"
+                )
+            else:
+                result = check(confirmer, deal)
+                used += 1
+                store.set_meta(key, str(used))
+                if result.status == "stale":
+                    deal.live_price_inr = result.live_price
+                    deal.live_note = result.note
+                    gone.append(deal)
+                    continue
+                if result.status == "confirmed":
+                    deal.live_price_inr = result.live_price
+                    deal.google_level = result.google_level
+                    deal.google_typical = result.google_typical
+                else:
+                    deal.live_note = f"not live-checked: {result.note}"
+            dead = {(g.quote.depart_date, g.quote.return_date) for g in gone}
+            deal.options = [o for o in deal.options if (o.depart_date, o.return_date) not in dead]
             send.append(deal)
-            continue
-        if used >= monthly_cap:
-            deal.live_note = f"not live-checked: monthly limit of {monthly_cap} searches reached"
-            send.append(deal)
-            continue
-        result = check(confirmer, deal)
-        used += 1
-        store.set_meta(key, str(used))
-        if result.status == "stale":
-            deal.live_price_inr = result.live_price
-            deal.live_note = result.note
-            stale.append(deal)
-        elif result.status == "confirmed":
-            deal.live_price_inr = result.live_price
-            deal.google_level = result.google_level
-            deal.google_typical = result.google_typical
-            send.append(deal)
-        else:
-            deal.live_note = f"not live-checked: {result.note}"
-            send.append(deal)
+            break
+        stale += gone
     return send, stale

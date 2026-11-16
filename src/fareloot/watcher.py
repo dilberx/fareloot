@@ -35,6 +35,9 @@ DRY_RECHECK_DAYS = 7
 ALT_MIN_HISTORY = 5
 ALT_DATE_WINDOW_DAYS = 3
 MAX_OPTIONS = 4
+# Next-best deals a lead brings along in case the live check finds it gone.
+# Each one tried costs a SerpApi search.
+MAX_FALLBACKS = 2
 
 
 def _distance(origin: str, destination: str, quote: Quote | None = None) -> int | None:
@@ -276,27 +279,44 @@ def alert_key(deal: Deal) -> tuple[int | None, str]:
     return None, f"month:{deal.quote.depart_month}"
 
 
-def pick_leads(deals: list[Deal], wl: Watchlist) -> list[Deal]:
+def stale_key(deal: Deal) -> tuple[int | None, str]:
+    """Cooldown key for a fare the live check found gone: that one date pair.
+
+    Keyed by month like a sent alert, one dead cache entry silenced every other
+    date on its route, then led again once the cooldown ran out, because a
+    lingering old low is usually the cheapest fare in a cache.
+    """
+    return deal.quote.trip_length, deal.quote.depart_date.isoformat()
+
+
+def _trip(q: Quote) -> tuple:
+    return q.origin, q.destination, q.depart_date, q.return_date
+
+
+def pick_leads(deals: list[Deal], wl: Watchlist, cooled: frozenset = frozenset()) -> list[Deal]:
     """One deal per destination and departure month, with its other dates attached.
 
     The lead is the pushing deal that is cheapest door to door; shorter trips
     win ties, since a long trip is the bigger commitment. Its options are the
     cheapest other dates on the same route and month, any length in a band, so
-    the reader sees the flexible choices this run found.
+    the reader sees the flexible choices this run found. The next-best deals
+    ride along as alternates, to lead if the live check finds the lead gone.
+    `cooled` holds trips (see `_trip`) recently found gone; they neither lead
+    nor appear as options.
     """
+    live = [d for d in deals if _trip(d.quote) not in cooled]
     groups: dict[tuple[str, str], list[Deal]] = {}
-    for deal in deals:
+    for deal in live:
         if deal.tier.pushes:
             key = (deal.quote.destination, deal.quote.depart_month)
             groups.setdefault(key, []).append(deal)
-    leads = []
-    for group in groups.values():
-        lead = min(group, key=lambda d: (ranked_total(d, wl), d.quote.trip_length or 0))
-        q = lead.quote
+    by_price = sorted(live, key=lambda d: d.quote.price_inr)
+
+    def options_for(q: Quote) -> list[Quote]:
         route = (q.origin, q.destination, q.depart_month)
         seen = {(q.depart_date, q.return_date)}
         options: list[Quote] = []
-        for other in sorted(deals, key=lambda d: d.quote.price_inr):
+        for other in by_price:
             o = other.quote
             if (o.origin, o.destination, o.depart_month) != route or not o.is_round_trip:
                 continue
@@ -306,7 +326,15 @@ def pick_leads(deals: list[Deal], wl: Watchlist) -> list[Deal]:
             options.append(o)
             if len(options) == MAX_OPTIONS:
                 break
-        lead.options = options
+        return options
+
+    leads = []
+    for group in groups.values():
+        group.sort(key=lambda d: (ranked_total(d, wl), d.quote.trip_length or 0))
+        lead, *rest = group[: MAX_FALLBACKS + 1]
+        for deal in (lead, *rest):
+            deal.options = options_for(deal.quote)
+        lead.alternates = rest
         leads.append(lead)
     leads.sort(key=lambda d: (-d.tier.rank, d.quote.price_inr))
     return leads
@@ -648,7 +676,22 @@ def poll(
     lowest_routes: set[tuple[str, str]] = set()
     # Leads come cheapest first, so if several months of one route are all a
     # new low this run, the one lowest-fare alert sent is the cheapest of them.
-    for deal in pick_leads(deals, wl):
+    # Fares the live check recently found gone sit out, each on its own date.
+    cooled = frozenset(
+        _trip(d.quote)
+        for d in deals
+        if d.tier.pushes
+        and not store.should_alert(
+            d.quote.origin,
+            d.quote.destination,
+            *stale_key(d),
+            d.quote.price_inr,
+            d.tier,
+            cooldown_hours=a.cooldown_hours,
+            redrop_pct=a.redrop_pct,
+        )
+    )
+    for deal in pick_leads(deals, wl, cooled):
         route = (deal.quote.origin, deal.quote.destination)
         if deal.lowest_in_window and route in lowest_routes:
             continue
@@ -693,6 +736,21 @@ def record_alerts(store: Store, deals: list[Deal]) -> None:
             deal.quote.destination,
             trip_key,
             date_key,
+            deal.quote.price_inr,
+            deal.tier,
+        )
+
+
+def record_stale(store: Store, deals: list[Deal]) -> None:
+    """Cool down fares the live check found gone, so the same dead cache entry
+    doesn't spend a search every run. Per date pair, never per month: the rest
+    of the route stays free to alert.
+    """
+    for deal in deals:
+        store.record_alert(
+            deal.quote.origin,
+            deal.quote.destination,
+            *stale_key(deal),
             deal.quote.price_inr,
             deal.tier,
         )

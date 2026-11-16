@@ -21,7 +21,7 @@ from .models import Quote
 from .providers.mock import MockProvider
 from .providers.travelpayouts import TravelpayoutsProvider
 from .store import Store
-from .watcher import poll, record_alerts, score_quotes, summarize_errors
+from .watcher import poll, record_alerts, record_stale, score_quotes, summarize_errors
 from .watcher import seed as seed_routes
 
 app = typer.Typer(add_completion=False, help="Catch abnormally cheap round trips from Kerala.")
@@ -284,9 +284,10 @@ def poll_cmd(
                     monthly_cap=settings.serpapi_monthly_cap,
                     now=datetime.now(UTC),
                 )
-                # A fare that is gone live is handled, not lost: cool it down so
-                # the same stale cache entry doesn't spend a search every run.
-                record_alerts(store, stale)
+                # A fare that is gone live is handled, not lost: cool that date
+                # down so the same stale cache entry doesn't spend a search every
+                # run, while the rest of its route stays free to alert.
+                record_stale(store, stale)
             confirmed = sum(1 for d in to_send if d.live_price_inr is not None)
             typer.echo(
                 f"Live check: {confirmed} confirmed, {len(stale)} dropped as stale, "
