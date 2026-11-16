@@ -69,8 +69,8 @@ would alert separately. Each of these is pinned by a test in `tests/test_lowest_
 
 With `FARELOOT_SERPAPI_KEY` set, the CLI prices each alert on Google Flights via SerpApi just
 before sending. Confirmed (within `STALE_TOLERANCE`, 10%) sends with the live price; stale drops
-it and records it with `record_alerts` so the dead cache entry cools down instead of spending a
-search every run; anything else (no key, error, no results, monthly cap in `meta`
+it, records it with `record_stale` so the dead cache entry cools down instead of spending a
+search every run, and tries the lead's alternates in order; anything else (no key, error, no results, monthly cap in `meta`
 `live_checks:YYYY-MM`) sends labelled unconfirmed. A checker fault must never cost a real deal.
 The key is a URL query parameter, so request exceptions are re-raised without the URL, as in
 `notify/telegram.py`. `fareloot live-check` verified on live data that a round-trip `price` is
@@ -145,6 +145,11 @@ Montreal trip when shorter ones were cheaper. Four rules came out of it, each pi
 - **One alert per destination and month** (`pick_leads`). The lead is cheapest door to door,
   shorter trips winning ties; up to `MAX_OPTIONS` other dates on its route and month ride along.
   The cooldown key is the month (`alert_key`), so the other dates don't alert separately later.
+- **A fare found gone cools only its own date** (`stale_key`, `record_stale`). Recorded under the
+  month key, one dead cache entry silenced its whole route-month and then led again after the
+  cooldown, since a lingering old low is usually the cheapest fare cached. Measured in one week:
+  4 of 9 live-checked alerts were stale. Each lead carries `MAX_FALLBACKS` alternates, and
+  `confirm_alerts` sends the first that isn't stale; each one tried costs a SerpApi search.
 
 `geo.COORDS` must cover every code in `places.PLACES` (a test enforces it). `MockProvider` uses
 real distances where known; random ones made other airports look absurdly cheap and tripped the

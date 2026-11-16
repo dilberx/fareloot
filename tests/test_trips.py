@@ -183,3 +183,107 @@ def test_one_alert_per_route_month_with_the_other_dates_attached():
     text = render(lead)
     assert "Other dates from Kochi in December:" in text
     assert "- Mon 14 Dec to Fri 01 Jan, 18 nights: Rs 8,800" in text
+
+
+class _Live:
+    """Live prices scripted by departure date; a missing date isn't listed."""
+
+    def __init__(self, prices):
+        self.prices, self.asked = prices, []
+
+    def live_price(self, q):
+        self.asked.append(q.depart_date)
+        return self.prices.get(q.depart_date)
+
+
+def _dubai_december(wl):
+    deals = [
+        _deal(_q("COK", "DXB", 8000, date(2026, 12, 5), 7)),
+        _deal(_q("COK", "DXB", 9000, date(2026, 12, 9), 5)),
+        _deal(_q("COK", "DXB", 9400, date(2026, 12, 20), 9)),
+        _deal(_q("COK", "DXB", 9600, date(2026, 12, 22), 6)),
+    ]
+    return deals, wl
+
+
+def test_stale_lead_hands_over_to_the_next_best_date(store):
+    from fareloot.confirm import confirm_alerts
+
+    deals, wl = _dubai_december(_wl([("COK", "local", 1, 200)], ["DXB"]))
+    [lead] = pick_leads(deals, wl)
+    assert lead.quote.price_inr == 8000
+    assert [a.quote.price_inr for a in lead.alternates] == [9000, 9400]
+
+    # The cheapest fare is a dead cache entry (live 14,000); the next one holds.
+    live = _Live({date(2026, 12, 5): 14000, date(2026, 12, 9): 9100})
+    send, stale = confirm_alerts([lead], live, store, monthly_cap=200, now=NOW)
+    assert [d.quote.price_inr for d in send] == [9000] and send[0].live_price_inr == 9100
+    assert [d.quote.price_inr for d in stale] == [8000]
+    # The dead date isn't offered as an option on the alert that goes out.
+    assert 8000 not in [o.price_inr for o in send[0].options]
+    assert store.get_meta("live_checks:2026-11") == "2"
+
+
+def test_every_candidate_stale_sends_nothing_and_stops_at_the_fallback_cap(store):
+    from fareloot.confirm import confirm_alerts
+
+    deals, wl = _dubai_december(_wl([("COK", "local", 1, 200)], ["DXB"]))
+    [lead] = pick_leads(deals, wl)
+    live = _Live({d.quote.depart_date: 20000 for d in deals})
+    send, stale = confirm_alerts([lead], live, store, monthly_cap=200, now=NOW)
+    assert send == [] and len(stale) == 3  # the lead plus two alternates, not all four
+    assert len(live.asked) == 3
+
+
+def test_without_a_live_check_the_lead_goes_out_and_alternates_stay_put(store):
+    from fareloot.confirm import confirm_alerts
+
+    deals, wl = _dubai_december(_wl([("COK", "local", 1, 200)], ["DXB"]))
+    [lead] = pick_leads(deals, wl)
+    send, stale = confirm_alerts([lead], None, store, monthly_cap=200, now=NOW)
+    assert send == [lead] and stale == []
+
+
+def test_a_date_found_gone_neither_leads_nor_shows_as_an_option():
+    deals, wl = _dubai_december(_wl([("COK", "local", 1, 200)], ["DXB"]))
+    cooled = frozenset({("COK", "DXB", date(2026, 12, 5), date(2026, 12, 12))})
+    [lead] = pick_leads(deals, wl, cooled)
+    assert lead.quote.price_inr == 9000
+    assert 8000 not in [o.price_inr for o in lead.options]
+
+
+def test_stale_fare_cools_only_its_own_date_not_the_route_month(store):
+    # The bug: a fare found gone was recorded under the month key, so one dead
+    # cache entry silenced every other date on its route for the whole cooldown,
+    # then led again when it ran out.
+    from fareloot.providers.mock import MockProvider
+    from fareloot.watcher import poll, record_alerts, record_stale
+
+    wl = _wl([("COK", "local", 1, 200)], ["GYD"])
+    wl.search_horizon_months = 2
+    today = date(2026, 11, 1)
+    provider = MockProvider(today=today)
+    for month in ("2026-11", "2026-12"):
+        for a, b in (("COK", "GYD"), ("GYD", "COK")):
+            store.record(provider.month_matrix(a, b, month))
+
+    first = poll(provider, store, wl, today=today).to_alert
+    assert first
+    record_stale(store, first)
+    second = poll(provider, store, wl, today=today).to_alert
+    # Same route-months alert again, each led by a different date.
+    assert {d.quote.depart_month for d in second} == {d.quote.depart_month for d in first}
+    assert not {_key(d) for d in second} & {_key(d) for d in first}
+    assert all(
+        _key(f) not in {(o.depart_date, o.return_date) for o in d.options}
+        for d in second
+        for f in first
+    )
+
+    # A delivered alert still cools the whole month.
+    record_alerts(store, second)
+    assert poll(provider, store, wl, today=today).to_alert == []
+
+
+def _key(deal):
+    return deal.quote.depart_date, deal.quote.return_date

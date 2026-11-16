@@ -111,6 +111,9 @@ class Deal:
     # deal per route-month that is sent. Lets a long or awkward lead show the
     # shorter or cheaper trips the run also saw.
     options: list[Quote] = field(default_factory=list)
+    # Next-best deals for the same destination and month, tried in order if the
+    # live check finds this one gone.
+    alternates: list[Deal] = field(default_factory=list)
 
     @property
     def total_inr(self) -> int:
