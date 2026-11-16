@@ -157,18 +157,22 @@ def _deal(quote, tier=Tier.STEAL, origin=None):
         tier=tier,
         baseline_inr=20000,
         saving_inr=20000 - quote.price_inr,
-        pct_below=40.0,
+        pct_below=(20000 - quote.price_inr) / 200,
         one_way_only=False,
         reasons=[],
     )
 
 
-def test_one_alert_per_route_month_with_the_other_dates_attached():
+def test_one_alert_per_route_month_with_a_menu_of_other_trip_lengths():
+    # Dubai is mid-distance: the menu groups are 3-4, 5-7, 8-10 and 11-14 nights.
     wl = _wl([("COK", "local", 1, 200)], ["DXB"])
     dec = [
         _deal(_q("COK", "DXB", 9000, date(2026, 12, 5), 7)),
         _deal(_q("COK", "DXB", 9000, date(2026, 12, 9), 5)),
+        _deal(_q("COK", "DXB", 9900, date(2026, 12, 3), 4)),
+        _deal(_q("COK", "DXB", 9700, date(2026, 12, 16), 3)),
         _deal(_q("COK", "DXB", 9400, date(2026, 12, 20), 9)),
+        _deal(_q("COK", "DXB", 19500, date(2026, 12, 2), 12), tier=Tier.NONE),
         _deal(_q("COK", "DXB", 8800, date(2026, 12, 14), 18), tier=Tier.NONE),
     ]
     jan = [_deal(_q("COK", "DXB", 9900, date(2027, 1, 8), 7))]
@@ -177,12 +181,44 @@ def test_one_alert_per_route_month_with_the_other_dates_attached():
     lead = next(d for d in leads if d.quote.depart_month == "2026-12")
     # Equal price: the shorter trip leads.
     assert lead.quote.trip_length == 5
-    # Options include a trip that can't lead (18 nights), cheapest first.
-    assert [o.price_inr for o in lead.options] == [8800, 9000, 9400]
+    # One fare per other length group, the cheapest in it, shortest first. The
+    # 7-night fare shares the lead's group; 18 nights is past every group.
+    assert [(o.quote.trip_length, o.quote.price_inr) for o in lead.options] == [
+        (3, 9700),
+        (9, 9400),
+        (12, 19500),
+    ]
 
     text = render(lead)
-    assert "Other dates from Kochi in December:" in text
-    assert "- Mon 14 Dec to Fri 01 Jan, 18 nights: Rs 8,800" in text
+    assert "Other trip lengths from Kochi in December:" in text
+    assert "- 9 nights, Sun 20 Dec to Tue 29 Dec: Rs 9,400, 53% below usual" in text
+    # A longer stay at a normal fare is offered, and labelled as no bargain.
+    assert "- 12 nights, Wed 02 Dec to Mon 14 Dec: Rs 19,500, about the usual price" in text
+    assert "not re-checked live" in text
+
+
+def test_each_menu_line_links_to_its_own_dates_in_html():
+    wl = _wl([("COK", "local", 1, 200)], ["DXB"])
+    deals = [
+        _deal(_q("COK", "DXB", 9000, date(2026, 12, 9), 5)),
+        _deal(_q("COK", "DXB", 9400, date(2026, 12, 20), 9)),
+    ]
+    [lead] = pick_leads(deals, wl)
+    html = render(lead, html=True)
+    assert html.count("<a href=") == 3  # two booking links plus one menu line
+    assert "2026-12-20" in html and ">Sun 20 Dec to Tue 29 Dec</a>" in html
+
+
+def test_route_with_one_trip_length_still_offers_other_dates():
+    wl = _wl([("COK", "local", 1, 200)], ["DXB"])
+    deals = [
+        _deal(_q("COK", "DXB", 9000, date(2026, 12, 9), 5)),
+        _deal(_q("COK", "DXB", 9300, date(2026, 12, 12), 6)),
+        _deal(_q("COK", "DXB", 9100, date(2026, 12, 15), 7)),
+        _deal(_q("COK", "DXB", 9800, date(2026, 12, 18), 5)),
+    ]
+    [lead] = pick_leads(deals, wl)
+    assert [o.quote.price_inr for o in lead.options] == [9300, 9100]
 
 
 class _Live:
@@ -220,7 +256,7 @@ def test_stale_lead_hands_over_to_the_next_best_date(store):
     assert [d.quote.price_inr for d in send] == [9000] and send[0].live_price_inr == 9100
     assert [d.quote.price_inr for d in stale] == [8000]
     # The dead date isn't offered as an option on the alert that goes out.
-    assert 8000 not in [o.price_inr for o in send[0].options]
+    assert 8000 not in [o.quote.price_inr for o in send[0].options]
     assert store.get_meta("live_checks:2026-11") == "2"
 
 
@@ -249,7 +285,7 @@ def test_a_date_found_gone_neither_leads_nor_shows_as_an_option():
     cooled = frozenset({("COK", "DXB", date(2026, 12, 5), date(2026, 12, 12))})
     [lead] = pick_leads(deals, wl, cooled)
     assert lead.quote.price_inr == 9000
-    assert 8000 not in [o.price_inr for o in lead.options]
+    assert 8000 not in [o.quote.price_inr for o in lead.options]
 
 
 def test_stale_fare_cools_only_its_own_date_not_the_route_month(store):
@@ -274,11 +310,7 @@ def test_stale_fare_cools_only_its_own_date_not_the_route_month(store):
     # Same route-months alert again, each led by a different date.
     assert {d.quote.depart_month for d in second} == {d.quote.depart_month for d in first}
     assert not {_key(d) for d in second} & {_key(d) for d in first}
-    assert all(
-        _key(f) not in {(o.depart_date, o.return_date) for o in d.options}
-        for d in second
-        for f in first
-    )
+    assert all(_key(f) not in {_key(o) for o in d.options} for d in second for f in first)
 
     # A delivered alert still cools the whole month.
     record_alerts(store, second)

@@ -26,6 +26,15 @@ LONG_HAUL_KM = 5_000
 SHORT_TRIP = (3, 6)
 MEDIUM_TRIP = (3, 10)
 LONG_TRIP = (7, 14)
+# The lengths an alert offers side by side, per window. The last group runs past
+# the window: a longer stay can't lead an alert, but it is worth showing when
+# someone wants it. One user got a 15-night lead and a 4-night lead for trips
+# they'd have taken at a week; one length is never the whole answer.
+TRIP_MENUS = {
+    SHORT_TRIP: [(3, 4), (5, 6), (7, 10)],
+    MEDIUM_TRIP: [(3, 4), (5, 7), (8, 10), (11, 14)],
+    LONG_TRIP: [(7, 9), (10, 14), (15, 21)],
+}
 
 _MODE_LABELS = {
     "local": "local",
@@ -80,6 +89,11 @@ def trip_window(km: int | None) -> tuple[int, int]:
     if km < LONG_HAUL_KM:
         return MEDIUM_TRIP
     return LONG_TRIP
+
+
+def trip_menu(km: int | None) -> list[tuple[int, int]]:
+    """Length groups, in nights, to offer for a flight this long."""
+    return TRIP_MENUS[trip_window(km)]
 
 
 def describe(reach: Reach) -> str:

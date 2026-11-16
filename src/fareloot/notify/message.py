@@ -41,17 +41,37 @@ def _dates(deal: Deal) -> str:
     return f"Out {q.depart_date:%a %d %b}, back {q.return_date:%a %d %b} ({q.trip_length} nights)"
 
 
-def _options(deal: Deal) -> list[str]:
-    """The route's other dates this month, so a fixed date pair isn't the only choice."""
+def _vs_usual(option: Deal) -> str:
+    if not option.baseline_inr:
+        return ""
+    if option.pct_below >= 10:
+        return f", {option.pct_below:.0f}% below usual"
+    return ", about the usual price"
+
+
+def _options(deal: Deal, html: bool) -> list[str]:
+    """The same route at other trip lengths, so one length isn't the only choice.
+
+    Each line says how its price compares with the usual for trips that long,
+    because a longer stay next to a deal is often just a normal fare. Lines
+    come back already escaped: in HTML the dates are a Google Flights link.
+    """
     if not deal.options:
         return []
+    esc = escape if html else (lambda s: s)
     q = deal.quote
-    lines = [f"Other dates from {place(q.origin)} in {q.depart_date:%B}:"]
-    for o in deal.options:
+    lines = [esc(f"Other trip lengths from {place(q.origin)} in {q.depart_date:%B}:")]
+    for option in deal.options:
+        o = option.quote
+        dates = f"{o.depart_date:%a %d %b} to {o.return_date:%a %d %b}"
+        if html:
+            dates = f'<a href="{escape(google_flights(o), quote=True)}">{escape(dates)}</a>'
         lines.append(
-            f"- {o.depart_date:%a %d %b} to {o.return_date:%a %d %b}, "
-            f"{o.trip_length} nights: Rs {o.price_inr:,}"
+            esc(f"- {o.trip_length} nights, ")
+            + dates
+            + esc(f": Rs {o.price_inr:,}{_vs_usual(option)}")
         )
+    lines.append(esc("These were seen in the last few hours and not re-checked live."))
     return lines
 
 
@@ -118,10 +138,9 @@ def render(deal: Deal, marker: str = "", *, html: bool = False) -> str:
             verdict += f" (usually Rs {lo:,} to {hi:,})"
         lines.append(verdict)
 
-    if deal.options:
-        lines += ["", *_options(deal)]
-
     body = [esc(line) for line in lines[1:]]
+    if deal.options:
+        body += ["", *_options(deal, html)]
     out = [lines[0], *body, "", _links(deal, marker, html)]
     if deal.tier in (Tier.JACKPOT, Tier.LOOT):
         out += ["", esc("Fares this cheap often disappear within hours.")]
@@ -144,7 +163,10 @@ def render_short(deal: Deal, marker: str = "", *, html: bool = False) -> str:
     else:
         when += ". Price checked live on Google Flights"
     if deal.options:
-        cheapest = min(o.price_inr for o in deal.options)
-        when += f". {len(deal.options)} other dates this month from Rs {cheapest:,}"
+        lengths = sorted({o.quote.trip_length for o in deal.options})
+        cheapest = min(o.quote.price_inr for o in deal.options)
+        when += (
+            f". Also {', '.join(str(n) for n in lengths)} nights this month, from Rs {cheapest:,}"
+        )
     first = f"<b>{esc(head)}</b>" if html else head
     return "\n".join([first, esc(when), _links(deal, marker, html)])

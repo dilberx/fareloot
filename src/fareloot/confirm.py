@@ -196,7 +196,9 @@ def confirm_alerts(
                 else:
                     deal.live_note = f"not live-checked: {result.note}"
             dead = {(g.quote.depart_date, g.quote.return_date) for g in gone}
-            deal.options = [o for o in deal.options if (o.depart_date, o.return_date) not in dead]
+            deal.options = [
+                o for o in deal.options if (o.quote.depart_date, o.quote.return_date) not in dead
+            ]
             send.append(deal)
             break
         stale += gone
